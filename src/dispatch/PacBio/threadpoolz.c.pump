@@ -1,0 +1,1173 @@
+#include "prf_config.h"
+#include <stdlib.h>
+#include <stdio.h>
+#include <stdint.h>
+#include <assert.h>
+#define __USE_INLINE_FUNCTIONS__
+#include "pfSequence.h"
+#include "pfOutput.h"
+#include "pb_common.h"
+#include "pb_threads.h"
+/****************************************************************************************************
+ * From the following enums, we define the ordering as follow
+ * 
+enum SearchType { PRF=1, REGEX=2 };
+enum OutputType { TEXT, HISTOGRAM, DENSITY, PNG, DATA, PDF };
+enum Constrain { WITH_REVERSE=1, SCORE_RANGE=2, CYCLE_RANGE=4, INVERSE_SELECTION=8, BORDER_CLIP=16};
+enum WrapperRange { Wrapper_Alignement = 0, Wrapper_Source = 1, Wrapper_Before = 2, Wrapper_After = 3,
+	                  Wrapper_Outer = 4};
+
+	MATRIX PRF:
+		TEXT:																								: 160 cases
+			- WITH_REVERSE
+			- SCORE_RANGE
+			- CYCLE_RANGE if circular profile only
+			- INVERSE_SELECTION
+			- BORDER_CLIP
+			- WRAPPER (5 cases)
+			
+		HISTOGRAM:																					:  4 cases
+			- WITH_REVERSE
+			- SCORE_RANGE 
+			- CYCLE_RANGE if circular profile only
+			
+		DENSITY: if circular profile												:  2 cases
+			- WITH_REVERSE
+			- SCORE_RANGE required anyway
+			- CYCLE_RANGE required anyway
+	
+		PDF, PNG, DATA:																			: 2 cases
+			- WITH_REVERSE
+	
+	
+	REGEX or PATTERN PRF:
+		TEXT:																								: 32 cases
+			- WITH_REVERSE
+			- SCORE_RANGE
+			- CYCLE_RANGE
+			- INVERSE_SELECTION
+			- BORDER_CLIP
+		
+		HISTOGRAM:																					:  6 cases
+			- WITH_REVERSE
+			- SCORE_RANGE 
+			- CYCLE_RANGE if circular profile only
+			
+		DENSITY:																						:  2 cases
+			- WITH_REVERSE
+			- SCORE_RANGE required anyway
+			- CYCLE_RANGE required anyway
+**************************************************************************************************** */
+
+$range WITH_REVERSE 0..1
+$range SCORE_RANGE 0..1
+$range CYCLE_RANGE 0..1
+$range HISTO_CYCLE 0..1
+$range INVERSE_SELECTION 0..1
+$range BORDER_CLIP 0..1
+$range WRAPPER_TEXT 0..5
+
+/****************************************************************************************************
+ * Structures
+ */
+
+typedef struct {
+	Alignment_t Aln;
+	int Index;
+} AlnIndex_t;
+
+/****************************************************************************************************
+ * External dependencies
+ */
+extern int compareAlignments(const void *a, const void *b);
+
+/****************************************************************************************************
+ * MATRIX PROFILES: TEXT
+ */
+
+$for WRAPPER_TEXT [[
+$for BORDER_CLIP [[ $for INVERSE_SELECTION [[ $for CYCLE_RANGE [[ $for SCORE_RANGE [[ $for WITH_REVERSE [[
+$if ((WRAPPER_TEXT < 5) | WITH_REVERSE) [[ 
+$if (WRAPPER_TEXT <> 4) [[
+static
+THREADPOOL_FUNCTION(tppbzps$WRAPPER_TEXT$BORDER_CLIP$INVERSE_SELECTION$CYCLE_RANGE$SCORE_RANGE$WITH_REVERSE)
+$if (CYCLE_RANGE == 1) [[
+
+#ifdef PRF_CORE_REPEAT
+
+]]
+{
+		char Header[1024]; 
+		$if WITH_REVERSE [[
+			unsigned char RevComp_Index_Mapping[ALPHABET_SIZE+2] __attribute__((aligned(16)));
+		]]
+		int res = SUCCESS;
+// 	  printf("Thread started fct THREAD_FCT_NAME\n");
+		
+		/*************************************************************************/
+    /*                          GET COMMON DATA                              */
+    /*************************************************************************/
+		common_t * const restrict common = _Data->common;
+		
+		/* For profile search we need to have */
+		const struct Profile * const restrict prf = common->profile;
+		const Compute_t * const restrict CoreCompute =common->Compute;
+		
+		/* For output we need */
+		const OutputType_t * const restrict OutputType = common->OutputType;
+		pthread_mutex_t * const restrict PrintLock = &(common->PrintLock);
+		
+		/*************************************************************************/
+		/*                          ALLOCATE MEMORY                              */
+		/*************************************************************************/
+		assert(prf->Length > 0);
+		const size_t prfLength = prf->Length;
+		const size_t matrixLD  = prf->Length + 1;
+		size_t LargestSequence = 2048UL;
+		union lScores * restrict matrix = _mm_malloc(matrixLD*LargestSequence*sizeof(union lScores), 64);
+		$if WITH_REVERSE [[
+			union lScores * restrict rvmatrix = _mm_malloc(matrixLD*LargestSequence*sizeof(union lScores), 64);
+		]]
+		unsigned char * restrict SequenceIndex = malloc(LargestSequence*sizeof(char));
+		int * restrict WORK = _mm_malloc(GetWorkArraySize(prf, CoreCompute), 64);
+		if ( $if WITH_REVERSE [[ rvmatrix == NULL || ]] matrix == NULL || WORK == NULL || SequenceIndex == NULL ) {
+			res = -1; 
+			goto FIN;
+		}
+		_Bool * restrict HasAPath;
+		/*if (!(OutputType->Specific.Text.OptimalOnly))*/ {
+			HasAPath = (_Bool*) malloc(LargestSequence*sizeof(_Bool));
+			if (HasAPath == NULL) {
+				res = -1;
+				goto FIN;
+			}
+		}
+		$if ( (WRAPPER_TEXT == 0) | (WRAPPER_TEXT == 5) ) [[
+			size_t OutputSequenceMemorySize = 0UL;
+			unsigned char * restrict OutputSequence = NULL;
+			$if WITH_REVERSE [[
+				size_t rvOutputSequenceMemorySize = 0UL;
+				unsigned char * restrict rvOutputSequence = NULL;
+			]]
+		]]
+		
+		/*************************************************************************/
+		/*                          CONFIGURE WORKER                             */
+		/*************************************************************************/
+		$if WITH_REVERSE [[
+			for (unsigned char a=0;a<ALPHABET_SIZE+2; a++) RevComp_Index_Mapping[a] = a;
+			{
+				unsigned char c;
+				c = RevComp_Index_Mapping[prf->Alphabet_Mapping[(int) 'A' - (int) 'A' ] ];
+				RevComp_Index_Mapping[prf->Alphabet_Mapping[(int) 'A' - (int) 'A' ] ] = RevComp_Index_Mapping[prf->Alphabet_Mapping[(int) 'T' - (int) 'A' ] ];
+				RevComp_Index_Mapping[prf->Alphabet_Mapping[(int) 'T' - (int) 'A' ] ] = c;
+			}
+			{
+				unsigned char c;
+				c = RevComp_Index_Mapping[prf->Alphabet_Mapping[(int) 'C' - (int) 'A' ] ];
+				RevComp_Index_Mapping[prf->Alphabet_Mapping[(int) 'C' - (int) 'A' ] ] = RevComp_Index_Mapping[prf->Alphabet_Mapping[(int) 'G' - (int) 'A' ] ];
+				RevComp_Index_Mapping[prf->Alphabet_Mapping[(int) 'G' - (int) 'A' ] ] = c;
+			}
+		]]
+
+    /* Assure all threads have been created before starting serving */
+    threadpool_t* const restrict  thpool = _Data->thpool;
+   
+//		/* Register signal handler */
+//     struct sigaction act;
+//     act.sa_handler = thread_hold;
+//     if (sigaction(SIGUSR1, &act, NULL) == -1) {
+// 	    fprintf(stderr, "thread_do(): cannot handle SIGUSR1");
+//     }
+    
+    /* Mark thread as alive (initialized) */
+    pthread_mutex_lock(&thpool->thcount_lock);
+    thpool->num_threads_alive += 1;
+    pthread_mutex_unlock(&thpool->thcount_lock);
+    
+    // Initialize some other data
+    pb_job_t * task = NULL;
+		
+    const int CutOff = prf->CutOff;
+ 		unsigned int AlignedSeqCounter = 0U;
+		
+		while(thpool->threads_keepalive) {
+			bsem_wait(thpool->jobqueue_p.has_items);
+			
+			if (thpool->threads_keepalive){
+			    pthread_mutex_lock(&thpool->thcount_lock);
+			    thpool->num_threads_working++;
+			    pthread_mutex_unlock(&thpool->thcount_lock);
+			    
+			    /* Read job from queue and execute it */
+			    pthread_mutex_lock(&thpool->jobqueue_p.rwmutex);
+			    task = (pb_job_t*) jobqueue_pull(&thpool->jobqueue_p);
+			    pthread_mutex_unlock(&thpool->jobqueue_p.rwmutex);
+			    
+			    /***************************************************************/
+			    /*                     START THE TASK                          */
+			    /***************************************************************/
+			    if (task) {
+						const HoleData_t * const HReg = &(task->HReg);
+						const unsigned int HoleNumber = HReg->HoleNumber;
+				    const unsigned int nRegions   = HReg->nRegions;
+// 						printf("Thread %lu working on hole %u, %u regions found\n", ((ThreadPool_Arg_t*)_Data)->ID, HoleNumber, nRegions);
+						restrictReadstoHQ(HReg);
+						
+						AlnIndex_t Alignment[ $if WITH_REVERSE [[ 3 ]] $else [[ 2 ]] ];
+						Alignment[0].Aln.Score = NLOW;
+						Alignment[0].Aln.Cycles = 0U;
+						Alignment[0].Index = -1;
+						AlnIndex_t * BestAlnPtr = &Alignment[0];
+						AlnIndex_t * TempAlnPtr = &Alignment[1];
+						$if ((WRAPPER_TEXT == 0) | (WRAPPER_TEXT == 5)) [[ size_t BestOutputSequenceLength; ]]
+						$if WITH_REVERSE [[
+							Alignment[2].Aln.Score = NLOW;
+							Alignment[2].Aln.Cycles = 0U;
+							Alignment[2].Index = -1;
+							AlnIndex_t * rvBestAlnPtr = &Alignment[2];
+							$if ((WRAPPER_TEXT == 0) | (WRAPPER_TEXT == 5)) [[ size_t rvBestOutputSequenceLength; ]]
+						]]
+						
+						for (int i=0; i<nRegions; i++) {
+							if (HReg->Regions[i].type == Insert) {
+								const int lSeqLength = (int) HReg->Regions[i].stop - (int) HReg->Regions[i].start;
+								if (lSeqLength <= 1 || lSeqLength < prf->Length) continue;
+								PFSequence PFSeq = { .ProfileIndex=SequenceIndex , .Length = lSeqLength} ;
+// 								printf("%.*s\n", (int) PFSeq.Length, &(task->Reads.Stream[HReg->Regions[i].start]));
+// 								goto FIN;
+								if (PFSeq.Length >= LargestSequence) {
+									_mm_free(matrix);
+									$if WITH_REVERSE [[_mm_free(rvmatrix);]]
+									LargestSequence = (PFSeq.Length + 1UL + 2047UL) & ~(2047UL);
+									matrix = _mm_malloc(matrixLD*LargestSequence*sizeof(union lScores), 64);
+									$if WITH_REVERSE [[
+										rvmatrix = _mm_malloc(matrixLD*LargestSequence*sizeof(union lScores), 64);
+									]]
+									SequenceIndex = (unsigned char*) realloc(SequenceIndex, LargestSequence*sizeof(unsigned char));
+									if ( $if WITH_REVERSE [[rvmatrix == NULL ||]] matrix == NULL || SequenceIndex == NULL) {
+										res = -2; 
+										goto FIN;
+									}
+									PFSeq.ProfileIndex = SequenceIndex;
+									
+									/*if (!(OutputType->Specific.Text.OptimalOnly))*/ {
+										HasAPath = realloc(HasAPath, LargestSequence*sizeof(_Bool));
+										if (HasAPath == NULL) {
+											res = -1;
+											goto FIN;
+										}
+									}
+								}
+								unsigned char * const restrict SequenceText = &(task->Reads.Stream[HReg->Regions[i].start]);
+								
+								/* Copy sequence to local space index */ 
+								memcpy(PFSeq.ProfileIndex, SequenceText, PFSeq.Length*sizeof(unsigned char));
+								
+								/* Translate into indices */
+								TranslateSequenceToIndex(&PFSeq, prf->Alphabet_Mapping);
+								
+								/* Build matrix */
+								CoreCompute->BuildMatrix(prf, PFSeq.ProfileIndex, matrix, WORK, NULL, 0, (size_t) PFSeq.Length);
+								
+								$if WITH_REVERSE [[
+									/* Reverse indices */
+									RevCompIndex(&PFSeq, RevComp_Index_Mapping);
+									
+									/* Build reverse matrix */
+									CoreCompute->BuildMatrix(prf, PFSeq.ProfileIndex, rvmatrix, WORK, NULL, 0, PFSeq.Length);
+								]]
+								
+								TempAlnPtr->Index = i;
+								///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+								// ALIGNMENT, SOURCE BEFORE AND AFTER OUTPUT
+
+								TempAlnPtr->Aln.Orientation = 1;
+								unsigned int count = 1U;
+								memset(HasAPath, 0, (1+PFSeq.Length));
+								int Score;
+								do {
+									/* Get Best Alignment */
+									size_t OutputSequenceLength = CoreCompute->GetNextBestAlignment(matrix, HasAPath, &(TempAlnPtr->Aln), PFSeq.Length, prfLength);
+									if (OutputSequenceLength == 0) {
+										if (TempAlnPtr->Aln.Score >= prf->CutOff) {
+											fprintf(stderr, "Issue as alignment does not start with an ENTRY point! (score=%i, seqlength=%lu)\n%s\n",
+														TempAlnPtr->Aln.Score, PFSeq.Length, SequenceText);
+										}
+										break;
+									}
+									
+									/* Prevent further alignment to use this region */
+									_Bool AlreadyUsed = false;
+									assert(TempAlnPtr->Aln.Matrix.row.End <= PFSeq.Length);
+									assert(TempAlnPtr->Aln.Matrix.row.Begin >=0);
+									for(int k=TempAlnPtr->Aln.Matrix.row.Begin; k<=TempAlnPtr->Aln.Matrix.row.End; ++k)
+										AlreadyUsed |= HasAPath[k]; 
+									Score = TempAlnPtr->Aln.Score;	
+									if (!AlreadyUsed) {
+										_Bool KeepIt = true;
+										$if SCORE_RANGE [[
+											KeepIt &= (Score >= OutputType->ScoreRange[0] && Score <= OutputType->ScoreRange[1]);
+										]]
+										$if CYCLE_RANGE [[ 
+											KeepIt &= (TempAlnPtr->Aln.Cycles >= OutputType->CycleRange[0] && TempAlnPtr->Aln.Cycles <= OutputType->CycleRange[1]);
+										]]
+										$if BORDER_CLIP [[
+											KeepIt &= (TempAlnPtr->Aln.Region.sequence.Begin >= OutputType->BorderClip[0])
+														&& ((TempAlnPtr->Aln.Region.sequence.End + OutputType->BorderClip[1]) <= PFSeq.Length);
+										]]
+										
+										$if INVERSE_SELECTION [[
+											KeepIt = !KeepIt;
+										]]
+										if (KeepIt) {
+											for(int k=TempAlnPtr->Aln.Matrix.row.Begin; k<=TempAlnPtr->Aln.Matrix.row.End; ++k) HasAPath[k] = true;
+											if (Score > BestAlnPtr->Aln.Score) {
+												$if ((WRAPPER_TEXT == 0)|(WRAPPER_TEXT == 5)) [[
+													/* Compute output sequence now, rather than doing it all again at the end */
+													if (OutputSequenceLength > OutputSequenceMemorySize) {
+														OutputSequenceMemorySize = OutputSequenceLength; 
+														OutputSequence = (unsigned char*) realloc(OutputSequence, OutputSequenceMemorySize*sizeof(unsigned char));
+														if (OutputSequence == NULL) {
+															fputs("Unable to allocate memory\n", stderr);
+															exit(1);
+														}
+													}
+													BestOutputSequenceLength = OutputSequenceLength;
+													CoreCompute->GetAlignmentSequence(matrix, SequenceText, OutputSequence,  &(TempAlnPtr->Aln), OutputSequenceMemorySize, prfLength);
+												]]
+												AlnIndex_t * tempptr = BestAlnPtr;
+												BestAlnPtr = TempAlnPtr;
+												TempAlnPtr = tempptr;
+											}
+											$if (BORDER_CLIP | SCORE_RANGE | CYCLE_RANGE | INVERSE_SELECTION) [[
+													if (OutputType->Specific.Text.OptimalOnly) break;
+											]]
+										}
+									}
+									/* Prevent reusing that alignment */
+									HasAPath[TempAlnPtr->Aln.Matrix.row.End] = true;
+									
+									$if (BORDER_CLIP | SCORE_RANGE | CYCLE_RANGE) [[ ]] $else [[
+											if (OutputType->Specific.Text.OptimalOnly) break;
+									]]
+								} while ($if SCORE_RANGE [[ Score >= OutputType->ScoreRange[0] ]] $else [[ Score >= prf->CutOff ]] );
+								
+								$if WITH_REVERSE [[
+										memset(HasAPath, 0, (1+PFSeq.Length)*sizeof(_Bool));
+									PerformRevComp(SequenceText, PFSeq.Length);
+									TempAlnPtr->Aln.Orientation = -1;
+									do {
+										/* Get Best Alignment */
+										size_t OutputSequenceLength = CoreCompute->GetNextBestAlignment(rvmatrix, HasAPath, &(TempAlnPtr->Aln), PFSeq.Length, prfLength);
+										if (OutputSequenceLength == 0) {
+											if (TempAlnPtr->Aln.Score >= prf->CutOff) {
+												fprintf(stderr, "Issue as alignment does not start with an ENTRY point! (score=%i, seqlength=%lu)\n%s\n",
+															TempAlnPtr->Aln.Score, PFSeq.Length, SequenceText);
+											}
+											break;
+										}
+										
+										/* Prevent further alignment to use this region */
+										_Bool AlreadyUsed = false;
+										assert(TempAlnPtr->Aln.Matrix.row.End <= PFSeq.Length);
+										assert(TempAlnPtr->Aln.Matrix.row.Begin >=0);
+										for(int k=TempAlnPtr->Aln.Matrix.row.Begin; k<=TempAlnPtr->Aln.Matrix.row.End; ++k)
+											AlreadyUsed |= HasAPath[k]; 
+										Score = TempAlnPtr->Aln.Score;	
+										if (!AlreadyUsed) {
+											_Bool KeepIt = true;
+											$if SCORE_RANGE [[
+												KeepIt &= (Score >= OutputType->ScoreRange[0] && Score <= OutputType->ScoreRange[1]);
+											]]
+											$if CYCLE_RANGE [[ 
+												KeepIt &= (TempAlnPtr->Aln.Cycles >= OutputType->CycleRange[0] && TempAlnPtr->Aln.Cycles <= OutputType->CycleRange[1]);
+											]]
+											$if BORDER_CLIP [[
+												KeepIt &= TempAlnPtr->Aln.Region.sequence.Begin >= OutputType->BorderClip[0]
+															&& ((TempAlnPtr->Aln.Region.sequence.End + OutputType->BorderClip[1]) <= PFSeq.Length);
+											]]
+											
+											$if INVERSE_SELECTION [[
+												KeepIt = !KeepIt;
+											]]
+											if (KeepIt)
+											{
+												for(int k=TempAlnPtr->Aln.Matrix.row.Begin; k<=TempAlnPtr->Aln.Matrix.row.End; ++k) HasAPath[k] = true;
+												if ( Score > rvBestAlnPtr->Aln.Score) {
+													$if ((WRAPPER_TEXT == 0)|(WRAPPER_TEXT == 5)) [[
+														/* Compute output sequence now, rather than doing it all again at the end */
+														if (OutputSequenceLength > rvOutputSequenceMemorySize) {
+															rvOutputSequenceMemorySize = OutputSequenceLength; 
+															rvOutputSequence = (unsigned char*) realloc(rvOutputSequence, rvOutputSequenceMemorySize*sizeof(unsigned char));
+															if (rvOutputSequence == NULL) {
+																fputs("Unable to allocate memory\n", stderr);
+																exit(1);
+															}
+														}
+														rvBestOutputSequenceLength = OutputSequenceLength;
+														CoreCompute->GetAlignmentSequence(rvmatrix, SequenceText, rvOutputSequence,  &(TempAlnPtr->Aln), rvOutputSequenceMemorySize, prfLength);
+													]]
+													AlnIndex_t * tempptr = rvBestAlnPtr;
+													rvBestAlnPtr = TempAlnPtr;
+													TempAlnPtr = tempptr;
+													// Potential break ????
+													// break;
+												}
+											}
+										}
+										/* Prevent reusing that alignment */
+										HasAPath[TempAlnPtr->Aln.Matrix.row.End] = true;
+									}  while ($if SCORE_RANGE [[ Score >= OutputType->ScoreRange[0] ]] $else [[ Score >= prf->CutOff ]] );
+								]]								
+							}
+						}
+
+						$if (WRAPPER_TEXT == 5) [[ {
+							int index;
+							const Alignment_t * BestOfStdAndRevComp;
+							const unsigned char * AlnText;
+							int AlnLength;
+							if (BestAlnPtr->Aln.Score >= rvBestAlnPtr->Aln.Score) {
+								index = BestAlnPtr->Index;
+								BestOfStdAndRevComp = &(BestAlnPtr->Aln);
+								AlnLength = BestOutputSequenceLength;
+								AlnText = OutputSequence; 
+							}
+							else {
+								index = rvBestAlnPtr->Index;
+								BestOfStdAndRevComp = &(rvBestAlnPtr->Aln);
+								AlnLength = rvBestOutputSequenceLength;
+								AlnText = rvOutputSequence; 
+							}
+							
+							if (index >= 0) {
+								snprintf(Header, 1024,"ZMW_%u_%i/%u-%u", HoleNumber, index, HReg->Regions[index].start, HReg->Regions[index].stop);
+								/* If the best is not revcomp, we need to perform back to normal as we are in revcomp */
+								pthread_mutex_lock(PrintLock);
+								OutputType->Specific.Text.Print(prf, AlnText, BestOfStdAndRevComp, Header, AlnLength, 0.0f);
+								pthread_mutex_unlock(PrintLock);
+								AlignedSeqCounter++;
+							}
+						} ]]
+						$else [[ {
+							$if WITH_REVERSE [[ {
+								const int index = rvBestAlnPtr->Index;
+								const int lSeqLength = (int) HReg->Regions[index].stop - (int) HReg->Regions[index].start;
+								unsigned char * const restrict SequenceText = &(task->Reads.Stream[HReg->Regions[index].start]);
+								if (index >= 0) {
+									$if (WRAPPER_TEXT == 2) [[
+										const unsigned char * const rvOutputSequence = SequenceText;
+										const size_t rvBestOutputSequenceLength = rvBestAlnPtr->Aln.Region.sequence.Begin - 1;
+									]]
+									$elif (WRAPPER_TEXT == 3) [[
+										const unsigned char * const rvOutputSequence = SequenceText + rvBestAlnPtr->Aln.Region.sequence.End + 1;
+										const size_t rvBestOutputSequenceLength = lSeqLength - rvBestAlnPtr->Aln.Region.sequence.End;
+									]]
+									$elif (WRAPPER_TEXT == 1) [[
+										const unsigned char * const rvOutputSequence = SequenceText;
+
+										const size_t rvBestOutputSequenceLength = lSeqLength;
+									]]
+									
+									snprintf(Header, 1024,"ZMW_%u_%i/%u-%u", HoleNumber, index, HReg->Regions[index].start, HReg->Regions[index].stop);
+									pthread_mutex_lock(PrintLock);
+									OutputType->Specific.Text.Print(prf,
+																									rvOutputSequence,
+																									&(rvBestAlnPtr->Aln), Header, rvBestOutputSequenceLength, 0.0f);
+									pthread_mutex_unlock(PrintLock);
+									AlignedSeqCounter++;
+								}
+							} ]]
+						
+							{
+								const int index = BestAlnPtr->Index;
+								const int lSeqLength = (int) HReg->Regions[index].stop - (int) HReg->Regions[index].start;
+								unsigned char * const restrict SequenceText = &(task->Reads.Stream[HReg->Regions[index].start]);
+								if (index >= 0) {
+									$if WRAPPER_TEXT [[ $if WITH_REVERSE [[
+										PerformRevComp(SequenceText, lSeqLength); // Put back the sequence in order
+									]] ]]
+									$if (WRAPPER_TEXT == 2) [[
+										const unsigned char * const OutputSequence = SequenceText;
+										const size_t BestOutputSequenceLength = BestAlnPtr->Aln.Region.sequence.Begin - 1;
+									]]
+									$elif (WRAPPER_TEXT == 3) [[
+										const unsigned char * const OutputSequence = SequenceText + BestAlnPtr->Aln.Region.sequence.End + 1;
+										const size_t BestOutputSequenceLength = lSeqLength - BestAlnPtr->Aln.Region.sequence.End;
+									]]
+									$elif (WRAPPER_TEXT == 1) [[
+										const unsigned char * const OutputSequence = SequenceText;
+										const size_t BestOutputSequenceLength = lSeqLength;
+									]]
+									
+									snprintf(Header, 1024,"ZMW_%u_%i/%u-%u", HoleNumber, index, HReg->Regions[index].start, HReg->Regions[index].stop);
+									pthread_mutex_lock(PrintLock);
+									OutputType->Specific.Text.Print(prf,
+																									OutputSequence,
+																									&(BestAlnPtr->Aln), Header, BestOutputSequenceLength, 0.0f);
+									pthread_mutex_unlock(PrintLock);
+									AlignedSeqCounter++;
+								}
+							}
+						} ]]
+						
+						/* Return the job memory slot */
+						pthread_mutex_lock(&thpool->donequeue_p.rwmutex);
+						jobqueue_push(&thpool->donequeue_p, (job_t*) task);
+						pthread_mutex_unlock(&thpool->donequeue_p.rwmutex);
+					}
+			    pthread_mutex_lock(&thpool->thcount_lock);
+			    thpool->num_threads_working--;
+			    pthread_mutex_unlock(&thpool->thcount_lock);
+			}
+    }
+    
+    /////////////////////////////////////////////////////////////////////////////////////////////////////////
+		//SUMMARIZE;
+		common->Counters[_Data->threadID] = AlignedSeqCounter;
+     
+    FIN:
+    pthread_mutex_lock(&thpool->thcount_lock);
+    thpool->num_threads_alive--;
+    pthread_mutex_unlock(&thpool->thcount_lock);
+		    
+		if (WORK) _mm_free(WORK);
+		if (matrix) _mm_free(matrix);
+		$if WITH_REVERSE [[if (rvmatrix) _mm_free(rvmatrix);]]
+		if (SequenceIndex) free(SequenceIndex);
+		free(HasAPath);
+		$if ((WRAPPER_TEXT == 0) | (WRAPPER_TEXT == 5)) [[
+			free(OutputSequence);
+			$if WITH_REVERSE [[ free(rvOutputSequence); ]] 
+		]]
+
+    if( res != SUCCESS) {
+      fprintf(stderr, "Thread %u error code %i\n", _Data->threadID, res);
+      if (task) {
+				pthread_mutex_lock(&thpool->thcount_lock);
+				thpool->num_threads_working--;
+				pthread_mutex_unlock(&thpool->thcount_lock);
+      }
+      thpool->threads_keepalive = 0;
+    }
+    
+    _Data->returnState = (void*) (uintptr_t) res;
+		
+    return 0;
+}
+$if (CYCLE_RANGE == 1) [[
+
+#else
+{
+		fputs("Enable PRF_CORE_REPEAT for cycles!\n", stderr);
+		return (void*) 1;
+}
+#endif
+
+]]
+	
+]]
+]]
+]] ]] ]] ]] ]]
+]]
+
+
+/****************************************************************************************************
+ * MATRIX PROFILES: HISTOGRAM
+ */
+$for HISTO_CYCLE [[
+$for CYCLE_RANGE [[ $for SCORE_RANGE [[ $for BORDER_CLIP [[ $for WITH_REVERSE [[
+$if (SCORE_RANGE | (HISTO_CYCLE & CYCLE_RANGE)) [[
+
+static
+THREADPOOL_FUNCTION(tppbzph$HISTO_CYCLE$BORDER_CLIP$CYCLE_RANGE$SCORE_RANGE$WITH_REVERSE)
+$if (CYCLE_RANGE == 1) [[
+
+#ifdef PRF_CORE_REPEAT
+
+]]
+{
+		char Header[1024]; 
+		$if WITH_REVERSE [[
+			unsigned char RevComp_Index_Mapping[ALPHABET_SIZE+2] __attribute__((aligned(16)));
+		]]
+		int res = SUCCESS;
+// 	  printf("Thread started fct THREAD_FCT_NAME\n");
+		
+		/*************************************************************************/
+    /*                          GET COMMON DATA                              */
+    /*************************************************************************/
+		common_t * const common = _Data->common;
+		
+		/* For profile search we need to have */
+		const struct Profile * const restrict prf = common->profile;
+		const Compute_t * const restrict CoreCompute =common->Compute;
+		
+		/* For output we need */
+		$if HISTO_CYCLE [[
+			const unsigned short int range[2] = { (common->OutputType)->CycleRange[0], 
+																						(common->OutputType)->CycleRange[1] }; 
+			$if SCORE_RANGE [[
+				const int ScoreRange[2] = { (common->OutputType)->ScoreRange[0],
+																		(common->OutputType)->ScoreRange[1] };
+			]]
+		]] $else [[
+			const int range[2] = { (common->OutputType)->ScoreRange[0],
+														 (common->OutputType)->ScoreRange[1] };
+			$if CYCLE_RANGE [[
+					const unsigned int CycleRange[2] = { (common->OutputType)->CycleRange[0], 
+																							 (common->OutputType)->CycleRange[1] };
+			]]
+		]]
+		
+		$if BORDER_CLIP [[
+			unsigned short int  BorderClip[2] =  { (common->OutputType)->BorderClip[0],
+																						 (common->OutputType)->BorderClip[1] };
+		
+		]]
+		const size_t HistogramBins = range[1] - range[0] + 1;
+		size_t * const restrict Histogram = common->Histograms + HistogramBins*(_Data->threadID);
+		
+		/*************************************************************************/
+		/*                          ALLOCATE MEMORY                              */
+		/*************************************************************************/
+		const size_t prfLength = prf->Length;
+		const size_t matrixLD  = prf->Length + 1;
+		size_t LargestSequence = 2048;
+		union lScores * restrict matrix = _mm_malloc(matrixLD*LargestSequence*sizeof(union lScores), 64);
+		$if WITH_REVERSE [[
+			union lScores * restrict rvmatrix = _mm_malloc(matrixLD*LargestSequence*sizeof(union lScores), 64);
+		]]
+		unsigned char * restrict SequenceIndex = malloc(LargestSequence*sizeof(unsigned char));
+		int * restrict WORK = _mm_malloc(GetWorkArraySize(prf, CoreCompute),64);
+		if ( $if WITH_REVERSE [[ rvmatrix == NULL || ]] matrix == NULL || WORK == NULL || SequenceIndex == NULL ) {
+			res = -1; 
+			goto FIN;
+		}
+				
+		/*************************************************************************/
+		/*                          CONFIGURE WORKER                             */
+		/*************************************************************************/
+		$if WITH_REVERSE [[
+			for (unsigned char a=0;a<ALPHABET_SIZE+2; a++) RevComp_Index_Mapping[a] = a;
+			{
+				unsigned char c;
+				c = RevComp_Index_Mapping[prf->Alphabet_Mapping[(int) 'A' - (int) 'A' ] ];
+				RevComp_Index_Mapping[prf->Alphabet_Mapping[(int) 'A' - (int) 'A' ] ] = RevComp_Index_Mapping[prf->Alphabet_Mapping[(int) 'T' - (int) 'A' ] ];
+				RevComp_Index_Mapping[prf->Alphabet_Mapping[(int) 'T' - (int) 'A' ] ] = c;
+			}
+			{
+				unsigned char c;
+				c = RevComp_Index_Mapping[prf->Alphabet_Mapping[(int) 'C' - (int) 'A' ] ];
+				RevComp_Index_Mapping[prf->Alphabet_Mapping[(int) 'C' - (int) 'A' ] ] = RevComp_Index_Mapping[prf->Alphabet_Mapping[(int) 'G' - (int) 'A' ] ];
+				RevComp_Index_Mapping[prf->Alphabet_Mapping[(int) 'G' - (int) 'A' ] ] = c;
+			}
+		]]
+
+    /* Assure all threads have been created before starting serving */
+    threadpool_t* const restrict  thpool = _Data->thpool;
+   
+//		/* Register signal handler */
+//     struct sigaction act;
+//     act.sa_handler = thread_hold;
+//     if (sigaction(SIGUSR1, &act, NULL) == -1) {
+// 	    fprintf(stderr, "thread_do(): cannot handle SIGUSR1");
+//     }
+    
+    /* Mark thread as alive (initialized) */
+    pthread_mutex_lock(&thpool->thcount_lock);
+    thpool->num_threads_alive += 1;
+    pthread_mutex_unlock(&thpool->thcount_lock);
+    
+    // Initialize some other data
+    pb_job_t * task = NULL;
+    size_t Missed = 0UL;
+		
+		while(thpool->threads_keepalive) {
+			bsem_wait(thpool->jobqueue_p.has_items);
+			
+			if (thpool->threads_keepalive){
+			    pthread_mutex_lock(&thpool->thcount_lock);
+			    thpool->num_threads_working++;
+			    pthread_mutex_unlock(&thpool->thcount_lock);
+			    
+			    /* Read job from queue and execute it */
+			    pthread_mutex_lock(&thpool->jobqueue_p.rwmutex);
+			    task = (pb_job_t*) jobqueue_pull(&thpool->jobqueue_p);
+			    pthread_mutex_unlock(&thpool->jobqueue_p.rwmutex);
+			    
+			    /***************************************************************/
+			    /*                     START THE TASK                          */
+			    /***************************************************************/
+			    if (task) {
+						const HoleData_t * const HReg = &(task->HReg);
+						const unsigned int HoleNumber = HReg->HoleNumber;
+				    const unsigned int nRegions   = HReg->nRegions;
+						restrictReadstoHQ(HReg);
+						
+						$if CYCLE_RANGE [[ 
+							ScoreCycle_t Best = { .Score = NLOW, .Cycles = 0 };
+						]]
+						$else [[
+							int BestScore = NLOW;
+						]]
+						
+						for (int i=0; i<nRegions; i++) {
+							if (HReg->Regions[i].type == Insert) {
+								const int lSeqLength = (int) HReg->Regions[i].stop - (int) HReg->Regions[i].start;
+								if (lSeqLength <= 1) continue;
+								PFSequence PFSeq = { .ProfileIndex=SequenceIndex , .Length = lSeqLength} ;
+
+								if (PFSeq.Length >= LargestSequence) {
+									_mm_free(matrix);
+									$if WITH_REVERSE [[_mm_free(rvmatrix);]]
+									LargestSequence = (PFSeq.Length + 1UL + 2047UL) & ~(2047UL);
+									matrix = _mm_malloc(matrixLD*LargestSequence*sizeof(union lScores), 64);
+									$if WITH_REVERSE [[
+										rvmatrix = _mm_malloc(matrixLD*LargestSequence*sizeof(union lScores), 64);
+									]]
+									SequenceIndex = (unsigned char*) realloc(SequenceIndex, LargestSequence*sizeof(unsigned char));
+									if ( $if WITH_REVERSE [[rvmatrix == NULL ||]] matrix == NULL || SequenceIndex == NULL) {
+										res = -2; 
+										goto FIN;
+									}
+									PFSeq.ProfileIndex = SequenceIndex;
+								}
+								const unsigned char * const restrict SequenceText = &(task->Reads.Stream[HReg->Regions[i].start]);
+								
+								/* Copy sequence to local space index */ 
+								memcpy(PFSeq.ProfileIndex, SequenceText, PFSeq.Length*sizeof(unsigned char));
+								
+								/* Translate into indices */
+								TranslateSequenceToIndex(&PFSeq, prf->Alphabet_Mapping);
+								
+								/* Build matrix */
+								CoreCompute->BuildMatrix(prf, PFSeq.ProfileIndex, matrix, WORK, NULL, 0, PFSeq.Length);
+								
+								$if WITH_REVERSE [[
+									/* Reverse indices */
+									RevCompIndex(&PFSeq, RevComp_Index_Mapping);
+									
+									/* Build reverse matrix */
+									CoreCompute->BuildMatrix(prf, PFSeq.ProfileIndex, rvmatrix, WORK, NULL, 0, PFSeq.Length);
+								]]
+								
+								/////////////////////////////////////////////////////////////////////////////////////////////////////////
+								// WORK_ON_MATRICES;
+								$if CYCLE_RANGE [[ {
+									ScoreCycle_t SC $if WITH_REVERSE [[ , rvSC ]] ;
+									GetBestScoreAndCycles(matrix, PFSeq.Length, prfLength, &SC);
+
+									$if WITH_REVERSE [[ GetBestScoreAndCycles(rvmatrix, PFSeq.Length, prfLength, &rvSC); ]]
+									$if BORDER_CLIP [[
+										if ((SC.Begin <= BorderClip[0]) || (SC.End+BorderClip[1] >= PFSeq.Length)) {
+											$if SCORE_RANGE [[ SC.Score = NLOW; ]]
+											$if CYCLE_RANGE [[ SC.Cycles = 0; ]]
+										}
+									]]
+									$if (HISTO_CYCLE & SCORE_RANGE) [[
+										if (SC.Score < ScoreRange[0] || SC.Score > ScoreRange[1]) {
+											SC.Cycles = 0;
+										}
+										$if WITH_REVERSE [[
+											if (rvSC.Score < ScoreRange[0] || rvSC.Score > ScoreRange[1]) {
+												rvSC.Cycles = 0;
+											}
+										]]
+									]]
+									$if (CYCLE_RANGE & ~(HISTO_CYCLE)) [[
+										if (SC.Cycles < CycleRange[0] || SC.Cycles > CycleRange[1]) {
+											SC.Score = NLOW;
+										}
+										$if WITH_REVERSE [[
+											if (rvSC.Cycles < CycleRange[0] || rvSC.Cycles > CycleRange[1]) {
+												rvSC.Score = NLOW;
+											}
+										]]
+									]]
+									
+									$if WITH_REVERSE [[
+										$if BORDER_CLIP [[
+											if ((rvSC.Begin <= BorderClip[0]) || (rvSC.End+BorderClip[1] >= PFSeq.Length)) {
+												$if SCORE_RANGE [[ rvSC.Score = NLOW; ]]
+												$if CYCLE_RANGE [[ rvSC.Cycles = 0; ]]
+											}
+										]]
+										$if HISTO_CYCLE [[
+											if (rvSC.Cycles > SC.Cycles) SC.Cycles = rvSC.Cycles;
+										]] $else [[
+											if (rvSC.Score > SC.Score) SC.Score = rvSC.Score;
+										]]
+									]]
+									
+									$if HISTO_CYCLE [[
+										if (SC.Cycles > Best.Cycles) Best = SC;
+									]]
+									$else [[
+										if (SC.Score > Best.Score) Best = SC;
+									]]
+								} ]]
+								$else [[ {
+									$if BORDER_CLIP [[
+										Alignment_t Alignment;
+										CoreCompute->GetBestAlignment(matrix, &Alignment, PFSeq.Length, prfLength);
+										if ( (Alignment.Region.sequence.Begin <= BorderClip[0]) 
+											|| (Alignment.Region.sequence.End+BorderClip[1] >= PFSeq.Length)) {
+											Alignment.Score = NLOW;
+										}
+										$if WITH_REVERSE [[
+											Alignment_t rvAlignment;
+											CoreCompute->GetBestAlignment(rvmatrix, &rvAlignment, PFSeq.Length, prfLength);
+											if ( (rvAlignment.Region.sequence.Begin <= BorderClip[0]) 
+											  || (rvAlignment.Region.sequence.End+BorderClip[1] >= PFSeq.Length)) {
+												rvAlignment.Score = NLOW;
+											}
+											else {
+												if (rvAlignment.Score > Alignment.Score) Alignment.Score = rvAlignment.Score;
+											}
+										]]
+										if (Alignment.Score > BestScore) BestScore = Alignment.Score;
+									]]
+									$else [[
+										int Score = CoreCompute->GetBestScore(matrix, PFSeq.Length, prfLength);
+										$if WITH_REVERSE [[
+											const int rvScore = CoreCompute->GetBestScore(rvmatrix, PFSeq.Length, prfLength);
+											if (rvScore > Score) Score = rvScore;
+										]]
+										if (Score > BestScore) BestScore = Score;
+									]]
+								} ]]
+							}
+						}
+						$if CYCLE_RANGE [[ 
+							$if HISTO_CYCLE [[
+								if (Best.Cycles >= range[0] && Best.Cycles <= range[1]) {
+									Histogram[Best.Cycles-range[0] ]++;
+								}
+								else 
+									Missed++;
+							]]
+							$else [[
+								if (Best.Score >= range[0] && Best.Score <= range[1]) {
+									Histogram[Best.Score-range[0] ]++;
+								}
+								else 
+									Missed++;
+							]]
+						]]
+						$else [[
+							if (BestScore >= range[0] && BestScore <= range[1]) {
+								Histogram[BestScore-range[0] ]++;
+							}
+							else 
+								Missed++;
+						]]
+						
+						/* Return the job memory slot */
+						pthread_mutex_lock(&thpool->donequeue_p.rwmutex);
+						jobqueue_push(&thpool->donequeue_p, (job_t*) task);
+						pthread_mutex_unlock(&thpool->donequeue_p.rwmutex);
+					}
+			    pthread_mutex_lock(&thpool->thcount_lock);
+			    thpool->num_threads_working--;
+			    pthread_mutex_unlock(&thpool->thcount_lock);
+			}
+    }
+    
+    /////////////////////////////////////////////////////////////////////////////////////////////////////////
+		//SUMMARIZE;
+		common->Counters[_Data->threadID] = Missed;
+     
+    FIN:
+    pthread_mutex_lock(&thpool->thcount_lock);
+    thpool->num_threads_alive--;
+    pthread_mutex_unlock(&thpool->thcount_lock);
+		    
+		if (WORK) _mm_free(WORK);
+		if (matrix) _mm_free(matrix);
+		$if WITH_REVERSE [[if (rvmatrix) _mm_free(rvmatrix);]]
+		if (SequenceIndex) free(SequenceIndex);
+	
+    if( res != SUCCESS) {
+      fprintf(stderr, "Thread %u error code %i\n", _Data->threadID, res);
+      if (task) {
+				pthread_mutex_lock(&thpool->thcount_lock);
+				thpool->num_threads_working--;
+				pthread_mutex_unlock(&thpool->thcount_lock);
+      }
+      thpool->threads_keepalive = 0;
+    }
+    
+    _Data->returnState = (void*) (uintptr_t) res;
+		
+    return 0;
+}
+$if (CYCLE_RANGE == 1) [[
+
+#else
+{
+		fputs("Enable PRF_CORE_REPEAT for cycles!\n", stderr);
+		return (void*) 1;
+}
+#endif
+
+]]
+
+]]
+]] ]] ]] ]]
+]]
+
+
+/****************************************************************************************************
+ * MATRIX PROFILES: DENSITY
+ */
+$for WITH_REVERSE [[
+
+static
+THREADPOOL_FUNCTION(tppbzpd$WITH_REVERSE)
+#ifdef PRF_CORE_REPEAT
+{
+	fprintf(stderr, "to be programmed !!!\n");
+	return 0;
+}
+#else
+{
+		fputs("Enable PRF_CORE_REPEAT for cycles!\n", stderr);
+		return (void*) 1;
+}
+#endif
+]]
+
+
+/****************************************************************************************************
+ * MATRIX PROFILES: OTHER
+ */
+$for WITH_REVERSE [[
+
+static
+THREADPOOL_FUNCTION(tppbzpo$WITH_REVERSE)
+{
+		char Header[1024]; 
+		$if WITH_REVERSE [[
+			unsigned char RevComp_Index_Mapping[ALPHABET_SIZE+2] __attribute__((aligned(16)));
+		]]
+		int res = SUCCESS;
+// 	  printf("Thread started fct THREAD_FCT_NAME\n");
+		
+		/*************************************************************************/
+    /*                          GET COMMON DATA                              */
+    /*************************************************************************/
+		common_t * const restrict common = _Data->common;
+		
+		/* For profile search we need to have */
+		const struct Profile * const restrict prf = common->profile;
+		const Compute_t * const restrict CoreCompute =common->Compute;
+		
+		/* For output we need */
+		const OutputType_t * const restrict OutputType = common->OutputType;
+		pthread_mutex_t * const restrict PrintLock = &(common->PrintLock);
+		const void * const OutputMethodOptions = &((common->OutputType)->Specific);
+		
+		/*************************************************************************/
+		/*                          ALLOCATE MEMORY                              */
+		/*************************************************************************/
+		const size_t prfLength = prf->Length;
+		const size_t matrixLD  = prf->Length + 1;
+		size_t LargestSequence = 2048;
+		union lScores * restrict matrix = _mm_malloc(matrixLD*LargestSequence*sizeof(union lScores), 64);
+		$if WITH_REVERSE [[
+			union lScores * restrict rvmatrix = _mm_malloc(matrixLD*LargestSequence*sizeof(union lScores), 64);
+		]]
+		unsigned char * restrict SequenceIndex = malloc(LargestSequence*sizeof(unsigned char));
+		int * restrict WORK = _mm_malloc(GetWorkArraySize(prf, CoreCompute),64); if ( $if WITH_REVERSE [[ rvmatrix == NULL || ]] matrix == NULL || WORK == NULL || SequenceIndex == NULL ) {
+			res = -1; 
+			goto FIN;
+		}
+				
+		/*************************************************************************/
+		/*                          CONFIGURE WORKER                             */
+		/*************************************************************************/
+		$if WITH_REVERSE [[
+			for (unsigned char a=0;a<ALPHABET_SIZE+2; a++) RevComp_Index_Mapping[a] = a;
+			{
+				unsigned char c;
+				c = RevComp_Index_Mapping[prf->Alphabet_Mapping[(int) 'A' - (int) 'A' ] ];
+				RevComp_Index_Mapping[prf->Alphabet_Mapping[(int) 'A' - (int) 'A' ] ] = RevComp_Index_Mapping[prf->Alphabet_Mapping[(int) 'T' - (int) 'A' ] ];
+				RevComp_Index_Mapping[prf->Alphabet_Mapping[(int) 'T' - (int) 'A' ] ] = c;
+			}
+			{
+				unsigned char c;
+				c = RevComp_Index_Mapping[prf->Alphabet_Mapping[(int) 'C' - (int) 'A' ] ];
+				RevComp_Index_Mapping[prf->Alphabet_Mapping[(int) 'C' - (int) 'A' ] ] = RevComp_Index_Mapping[prf->Alphabet_Mapping[(int) 'G' - (int) 'A' ] ];
+				RevComp_Index_Mapping[prf->Alphabet_Mapping[(int) 'G' - (int) 'A' ] ] = c;
+			}
+		]]
+
+    /* Assure all threads have been created before starting serving */
+    threadpool_t* const restrict  thpool = _Data->thpool;
+   
+//		/* Register signal handler */
+//     struct sigaction act;
+//     act.sa_handler = thread_hold;
+//     if (sigaction(SIGUSR1, &act, NULL) == -1) {
+// 	    fprintf(stderr, "thread_do(): cannot handle SIGUSR1");
+//     }
+    
+    /* Mark thread as alive (initialized) */
+    pthread_mutex_lock(&thpool->thcount_lock);
+    thpool->num_threads_alive += 1;
+    pthread_mutex_unlock(&thpool->thcount_lock);
+    
+    // Initialize some other data
+    pb_job_t * task = NULL;
+		
+    const int CutOff = prf->CutOff;
+		
+		while(thpool->threads_keepalive) {
+			bsem_wait(thpool->jobqueue_p.has_items);
+			
+			if (thpool->threads_keepalive){
+			    pthread_mutex_lock(&thpool->thcount_lock);
+			    thpool->num_threads_working++;
+			    pthread_mutex_unlock(&thpool->thcount_lock);
+			    
+			    /* Read job from queue and execute it */
+			    pthread_mutex_lock(&thpool->jobqueue_p.rwmutex);
+			    task = (pb_job_t*) jobqueue_pull(&thpool->jobqueue_p);
+			    pthread_mutex_unlock(&thpool->jobqueue_p.rwmutex);
+			    
+			    /***************************************************************/
+			    /*                     START THE TASK                          */
+			    /***************************************************************/
+			    if (task) {
+						const HoleData_t * const HReg = &(task->HReg);
+						const unsigned int HoleNumber = HReg->HoleNumber;
+				    const unsigned int nRegions   = HReg->nRegions;
+// 						printf("Thread %lu working on hole %u, %u regions found\n", ((ThreadPool_Arg_t*)_Data)->ID, HoleNumber, nRegions);
+						restrictReadstoHQ(HReg);
+						
+						for (int i=0; i<nRegions; i++) {
+							if (HReg->Regions[i].type == Insert) {
+								const int lSeqLength = (int) HReg->Regions[i].stop - (int) HReg->Regions[i].start;
+								if (lSeqLength <= 1) continue;
+								PFSequence PFSeq = { .ProfileIndex=SequenceIndex , .Length = lSeqLength} ;
+// 								printf("%.*s\n", (int) PFSeq.Length, &(task->Reads.Stream[HReg->Regions[i].start]));
+// 								goto FIN;
+								if (PFSeq.Length >= LargestSequence) {
+									_mm_free(matrix);
+									$if WITH_REVERSE [[_mm_free(rvmatrix);]]
+									LargestSequence = (PFSeq.Length + 1UL + 2047UL) & ~(2047UL);
+									matrix        = _mm_malloc(matrixLD*LargestSequence*sizeof(union lScores), 64);
+									$if WITH_REVERSE [[
+									rvmatrix      = _mm_malloc(matrixLD*LargestSequence*sizeof(union lScores), 64);
+									]]
+									SequenceIndex = (unsigned char*) realloc(SequenceIndex, LargestSequence*sizeof(unsigned char));
+									if ( $if WITH_REVERSE [[rvmatrix == NULL ||]] matrix == NULL || SequenceIndex == NULL) {
+										res = -2; 
+										goto FIN;
+									}
+									PFSeq.ProfileIndex = SequenceIndex;
+								}
+								unsigned char * const restrict SequenceText = &(task->Reads.Stream[HReg->Regions[i].start]);
+								
+								/* Copy sequence to local space index */ 
+								memcpy(PFSeq.ProfileIndex, SequenceText, PFSeq.Length*sizeof(unsigned char));
+								
+								/* Translate into indices */
+								TranslateSequenceToIndex(&PFSeq, prf->Alphabet_Mapping);
+								
+								/* Build matrix */
+								CoreCompute->BuildMatrix(prf, PFSeq.ProfileIndex, matrix, WORK, NULL, 0, PFSeq.Length);
+								
+								$if WITH_REVERSE [[
+									/* Reverse indices */
+									RevCompIndex(&PFSeq, RevComp_Index_Mapping);
+									
+									/* Build reverse matrix */
+									CoreCompute->BuildMatrix(prf, PFSeq.ProfileIndex, rvmatrix, WORK, NULL, 0, PFSeq.Length);
+								]]
+								
+								///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+								snprintf(Header, 1024,"ZMW_%u_%i/%u-%u", HoleNumber, i, HReg->Regions[i].start, HReg->Regions[i].stop);
+								OutputType->OutputFct(matrix, $if WITH_REVERSE [[ rvmatrix ]] $else [[ NULL ]], SequenceText, Header,
+						       prf, CoreCompute, PFSeq.Length, OutputMethodOptions, PrintLock);
+							}
+						}
+						
+						/* Return the job memory slot */
+						pthread_mutex_lock(&thpool->donequeue_p.rwmutex);
+						jobqueue_push(&thpool->donequeue_p, (job_t*) task);
+						pthread_mutex_unlock(&thpool->donequeue_p.rwmutex);
+					}
+			    pthread_mutex_lock(&thpool->thcount_lock);
+			    thpool->num_threads_working--;
+			    pthread_mutex_unlock(&thpool->thcount_lock);
+			}
+    }
+         
+    FIN:
+    pthread_mutex_lock(&thpool->thcount_lock);
+    thpool->num_threads_alive--;
+    pthread_mutex_unlock(&thpool->thcount_lock);
+		    
+		if (WORK) _mm_free(WORK);
+		if (matrix) _mm_free(matrix);
+		$if WITH_REVERSE [[if (rvmatrix) _mm_free(rvmatrix);]]
+		if (SequenceIndex) free(SequenceIndex);
+		
+    if( res != SUCCESS) {
+      fprintf(stderr, "Thread %u error code %i\n", _Data->threadID, res);
+      if (task) {
+				pthread_mutex_lock(&thpool->thcount_lock);
+				thpool->num_threads_working--;
+				pthread_mutex_unlock(&thpool->thcount_lock);
+      }
+      thpool->threads_keepalive = 0;
+    }
+    
+    _Data->returnState = (void*) (uintptr_t) res;
+		
+    return 0;
+}
+
+]]
+
+
+THREADPOOL_FUNCTION( (*ltp_pbzp[]) ) = {
+$for WRAPPER_TEXT [[
+$for BORDER_CLIP [[ $for INVERSE_SELECTION [[ $for CYCLE_RANGE [[ $for SCORE_RANGE [[ $for WITH_REVERSE [[
+$if ((WRAPPER_TEXT < 5) | WITH_REVERSE) [[ 
+$if (WRAPPER_TEXT <> 4) [[
+	&tppbzps$WRAPPER_TEXT$BORDER_CLIP$INVERSE_SELECTION$CYCLE_RANGE$SCORE_RANGE$WITH_REVERSE,
+]]
+$else [[
+	NULL,
+]]
+]]
+]] ]] ]] ]] ]]
+]]
+
+$for HISTO_CYCLE [[
+$for CYCLE_RANGE [[ $for SCORE_RANGE [[ $for BORDER_CLIP [[ $for WITH_REVERSE [[
+$if ((SCORE_RANGE & ~(HISTO_CYCLE)) | (HISTO_CYCLE & CYCLE_RANGE)) [[
+	&tppbzph$HISTO_CYCLE$BORDER_CLIP$CYCLE_RANGE$SCORE_RANGE$WITH_REVERSE,
+
+]]
+]] ]] ]] ]]
+]]
+
+
+$for WITH_REVERSE [[
+	&tppbzpd$WITH_REVERSE,
+]]
+
+
+$for WITH_REVERSE [[
+	&tppbzpo$WITH_REVERSE,
+]]
+
+	0
+};
+
+THREADPOOL_FUNCTION( (* * tp_pbzp) ) = ltp_pbzp;

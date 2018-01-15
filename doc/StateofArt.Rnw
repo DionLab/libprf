@@ -1,0 +1,206 @@
+\documentclass[notitlepage,a4paper]{article}
+\usepackage[utf8]{inputenc}
+\usepackage{pmboxdraw}
+\usepackage[left=2.3cm,right=1.3cm,top=1.8cm]{geometry}
+\usepackage{pdflscape}
+\usepackage{anyfontsize}
+\usepackage[smallscripts]{moresize}
+\usepackage[a4paper,colorlinks]{hyperref}
+\hypersetup{
+    pdftitle = {State of the Art: PacBio Repeats},
+    pdfsubject = {},
+    pdfauthor = {Thierry Schuepbach}
+}
+\title{State of the Art\\ PacBio repeats through tweaked PfTools software suite}
+\author{Thierry Schuepbach}
+\begin{document}
+\maketitle
+\tableofcontents
+
+\section{Description of the experiment}
+In an attempt to account tandem repeats inside PacBio Next Generation Sequencing Technology data was generated for a single fixed number of repeat (to be determined) of "CAG" trinucleotides.\\
+Available data files are:
+\small{
+\begin{verbatim}
+├── [4.0K]  Analysis_Results
+│   ├── [3.2G]  m160726_161412_42182_c101000162550000001823232709161623_s1_p0.1.bax.h5
+│   ├── [448K]  m160726_161412_42182_c101000162550000001823232709161623_s1_p0.1.log
+│   ├── [ 20M]  m160726_161412_42182_c101000162550000001823232709161623_s1_p0.1.subreads.fasta
+│   ├── [ 40M]  m160726_161412_42182_c101000162550000001823232709161623_s1_p0.1.subreads.fastq
+│   ├── [2.8G]  m160726_161412_42182_c101000162550000001823232709161623_s1_p0.2.bax.h5
+│   ├── [442K]  m160726_161412_42182_c101000162550000001823232709161623_s1_p0.2.log
+│   ├── [ 19M]  m160726_161412_42182_c101000162550000001823232709161623_s1_p0.2.subreads.fasta
+│   ├── [ 37M]  m160726_161412_42182_c101000162550000001823232709161623_s1_p0.2.subreads.fastq
+│   ├── [3.2G]  m160726_161412_42182_c101000162550000001823232709161623_s1_p0.3.bax.h5
+│   ├── [440K]  m160726_161412_42182_c101000162550000001823232709161623_s1_p0.3.log
+│   ├── [ 22M]  m160726_161412_42182_c101000162550000001823232709161623_s1_p0.3.subreads.fasta
+│   ├── [ 43M]  m160726_161412_42182_c101000162550000001823232709161623_s1_p0.3.subreads.fastq
+│   ├── [1.3M]  m160726_161412_42182_c101000162550000001823232709161623_s1_p0.bas.h5
+│   ├── [ 74M]  m160726_161412_42182_c101000162550000001823232709161623_s1_p0.sts.csv
+│   └── [128K]  m160726_161412_42182_c101000162550000001823232709161623_s1_p0.sts.xml
+├── [220G]  m160726_161412_42182_c101000162550000001823232709161623_s1_p0.1.trx.h5
+├── [8.8K]  m160726_161412_42182_c101000162550000001823232709161623_s1_p0.1.xfer.xml
+├── [220G]  m160726_161412_42182_c101000162550000001823232709161623_s1_p0.2.trx.h5
+├── [5.2K]  m160726_161412_42182_c101000162550000001823232709161623_s1_p0.2.xfer.xml
+├── [220G]  m160726_161412_42182_c101000162550000001823232709161623_s1_p0.3.trx.h5
+├── [5.2K]  m160726_161412_42182_c101000162550000001823232709161623_s1_p0.3.xfer.xml
+├── [673M]  m160726_161412_42182_c101000162550000001823232709161623_s1_p0.mcd.h5
+├── [3.9K]  m160726_161412_42182_c101000162550000001823232709161623_s1_p0.metadata.xml
+└── [1.3M]  m160726_161412_42182_c101000162550000001823232709161623_s1_p0.trc.h5
+\end{verbatim}
+}
+\section{Early methods and new addons to the PfTools}
+\subsection{Perl scripts}
+The following Perl script is used to account the number of "CAG" found within a subread:
+\begin{verbatim}
+cat xxx.fastq | perl -ne '@A=$_=~/(C{1,3}A{1,3}G{1,3})/g; printf "%d\n",$#A+1'
+\end{verbatim}
+
+
+\subsection{Addons to the PfTools: PfRepeat}
+The PfTools suite as of version 3.x no longer had support for cyclic profiles. That feature was deprecated at the time of reimplementation in C due to the lack of use as opposed to the work involved.
+I thus forked the code into a brand new tool "PfRepeat", reimplementing the connection so that input sequences could loop again on the profile if proven benefical.
+Furthermore, several new analysis were added to fit the experiment goal, it is worth mentioning that unlike the Perl script, the code here always compute the reverse complement and chooses the best value.
+\begin{enumerate}
+  \item[Histogram] Given the number of bins, a histogram is generated for all subreads. That can be on the number of profile cycle or 
+  \item[Density] Density plots are available to compare profile scores with profile number of cyles.
+  \item[Standard regex] Regex sequences can be directly given instead or with a profile in order to account the number of matches.
+  \item[Appended regex] As en extension to the previous analysis, we self-concatenate the regex sequence until nothing is found within the input string sequence. 
+\end{enumerate}
+
+PacBio pipeline exports sequences in FASTA format which is fine for the PfTools. Nevertheless, such available sequences have been filtered (quality, number of subreads, etc...). Therefore direct reading of PacBio native format was implemented to allow analysis not only on a subread basis but also on a hole basis. Output formats were modified accordingly to export interesting pieces of informations such as hole locations, qualities, types and number of subreads. At last, hole analysis would not be complete without mininum, maximum and mean computed values with respect to the number of subreads.
+
+
+
+\section{Results so far}
+
+<<eval=TRUE, echo=FALSE>>=
+  library("xtable")
+  source("/home/tschuepb/Projects/PacBioRepeat/R/PacBioFct.R")
+  buylrd <- c("#313695", "#4575B4", "#74ADD1", "#ABD9E9", "#E0F3F8", "#FFFFBF", "#FEE090", "#FDAE61", "#F46D43", "#D73027", "#A50026")
+myColors <-  colorRampPalette(c("#00007F", "blue", "#007FFF", "cyan", "#7FFF7F", "yellow", "#FF7F00", "red", "#7F0000"))
+@
+
+<<eval=TRUE, echo=FALSE, fig.width=12, fig.height=6, warning=FALSE, comment=FALSE>>=
+setwd("/home/tschuepb/Data/pcbio/hdf/A06_1//Analysis_Results")
+Regex_data <- read.table("fasta_regex.dat.histogram");
+colnames(Regex_data) <- c("cycles", "counts");
+Regex_data_revcomp <- read.table("fasta_regex_revcomp.dat.histogram");
+Regex_data$counts = Regex_data$counts + Regex_data_revcomp[,2];
+Regex_count_data <- read.table("fasta_regex_cycle.dat.histogram");
+colnames(Regex_count_data) <- c("cycles", "counts");
+prf_data <- read.table("fasta_prf.dat.histogram");
+colnames(prf_data) <- c("cycles", "counts");
+
+plot(Regex_data$cycles, Regex_data$counts, log="y", col="green", type='l', xlim=c(0,600), yaxt="n",
+     xlab="pattern matches", ylab="counts or cycle counts", main="PacBio FASTA output")
+lines(Regex_count_data$cycles, Regex_count_data$counts, col="brown")
+lines(prf_data$cycles, prf_data$counts, col="blue")
+
+ticks <- seq(0,7,by=1)
+labels <- sapply(ticks, function(i) as.expression(bquote(10^ .(i))))
+axis(2,at=c(1,10,100,1000,10000,100000,1000000, 10000000), labels=labels, las=1)
+legend("topright", c("regex","replicated regex","profile"), col=c("green","brown", "blue"), lwd=1, bty="n")
+@
+
+<<eval=TRUE, echo=FALSE, fig.width=12, fig.height=6, warning=FALSE, comment=FALSE>>=
+setwd("/home/tschuepb/Data/pcbio/hdf/A06_1//Analysis_Results")
+H5_prf_data <- read.table("h5_prf_regex.dat", header=TRUE, sep="\t");
+H5_prf_data_per_hole <- read.table("h5_prf_regex_per_hole.dat", header=TRUE, sep="\t");
+
+br <- seq(from = 0, to = 16000, by=1);
+H5_prf_data_regex <- hist(H5_prf_data[,"regex"], breaks = br, plot = FALSE, warn.unused = FALSE)
+H5_prf_data_cycle <- hist(H5_prf_data[,"cycle"], breaks = br, plot = FALSE, warn.unused = FALSE)
+
+plot(H5_prf_data_regex$breaks[1:16000], H5_prf_data_regex$counts,
+     log="y", col="red", type='l', xlim=c(0,600), yaxt="n",
+     xlab="pattern matches", ylab="counts", main="PacBio H5 output")
+lines(H5_prf_data_cycle$breaks[1:16000], H5_prf_data_cycle$counts, col="orange")
+
+ticks <- seq(0,7,by=1)
+labels <- sapply(ticks, function(i) as.expression(bquote(10^ .(i))))
+axis(2,at=c(1,10,100,1000,10000,100000,1000000, 10000000), labels=labels, las=1)
+legend("topright", c("regex", "profile"), col=c("red", "orange"), lwd=1, bty="n")
+@
+
+<<eval=TRUE, echo=FALSE, fig.width=12, fig.height=6, warning=FALSE, comment=FALSE>>=
+layout(matrix(c(1,2),nrow=1,ncol=2, byrow=TRUE))
+hist(H5_prf_data_per_hole$subreads, breaks=500, main="Histogram of the subreads number", xlab="subreads count", xlim=c(4,100), ylim=c(0,100))
+hist(H5_prf_data_per_hole$HQ.region.len, breaks=1000, main="Histogram of High Quality region length", xlab="length")
+layout(matrix(1,nrow=1, ncol=1))
+@
+
+Carefully read the histogram plot of subreads number as it only shows the range $[4,100]$. 
+
+<<eval=TRUE, echo=FALSE, fig.width=12, fig.height=8, warning=FALSE, comment=FALSE>>=
+layout(matrix(c(1,1,2,2,1,1,2,2,3,3,4,4),nrow=3,ncol=4, byrow=TRUE))
+val <- H5_prf_data_per_hole[order(H5_prf_data_per_hole$y,H5_prf_data_per_hole$x), c("x","y","avg.seq.len", "subreads")]
+#val2 <- val[val$"avg seq length" > 4000,]
+val$fac <- cut(log(1+val$"avg.seq.len"), breaks=10)
+plot(x=val[,"x"],y=val[,"y"],col=rainbow(10)[match(val[,"fac"], levels(val$fac))], pch=15, axes=FALSE,
+     xlim=c(-160,160), ylim=c(-160,160), xlab="x", ylab="y",
+     main="Log of sequence length")
+axis(1,at=seq(-160,160,by=40), label=seq(-160,160,by=40))
+axis(2,at=seq(-160,160,by=40), label=seq(-160,160,by=40))
+val2 <- val[val$"subreads" > 25,]
+val2$fac2 <- cut(val2$"subreads", breaks=20)
+plot(x=val2[,"x"],y=val2[,"y"],col=myColors(20)[match(val2[,"fac2"], levels(val2$fac2))], pch=15, axes=FALSE,
+     xlim=c(-160,160), ylim=c(-160,160), xlab="x", ylab="y",
+     main="Subread count")
+axis(1,at=seq(-160,160,by=40), label=seq(-160,160,by=40))
+axis(2,at=seq(-160,160,by=40), label=seq(-160,160,by=40))
+
+plot(0,type="n", xlab="", ylab="", axes=FALSE)
+legend("topleft",levels(val$fac), pch=15, col=rainbow(10), ncol=5, cex=1.2, pt.cex=2)
+
+plot(0,type="n", xlab="", ylab="", axes=FALSE)
+legend("topleft",levels(val2$fac2), pch=15, col=myColors(20), ncol=5, cex=1.2, pt.cex=2)
+rm(val)
+layout(matrix(1,nrow=1, ncol=1))
+@
+
+<<eval=TRUE, echo=FALSE, fig.width=12, fig.height=8, warning=FALSE, comment=FALSE>>=
+layout(matrix(c(1,1,2,2,1,1,2,2,3,3,4,4),nrow=3,ncol=4, byrow=TRUE))
+val <- H5_prf_data_per_hole[order(H5_prf_data_per_hole$y,H5_prf_data_per_hole$x), c("x","y","avg.score", "avg.cycle")]
+val$fac <- cut(log(1+val$"avg.score"), breaks=10)
+plot(x=val[,"x"],y=val[,"y"],col=rainbow(10)[match(val[,"fac"], levels(val$fac))], pch=15, axes=FALSE,
+     xlim=c(-160,160), ylim=c(-160,160), xlab="x", ylab="y",
+     main="Log of profile score")
+axis(1,at=seq(-160,160,by=40), label=seq(-160,160,by=40))
+axis(2,at=seq(-160,160,by=40), label=seq(-160,160,by=40))
+val2 <- val[val$"avg.cycle" > 40,]
+val2$fac2 <- cut(val2$"avg.cycle", breaks=20)
+plot(x=val2[,"x"],y=val2[,"y"],col=myColors(20)[match(val2[,"fac2"], levels(val2$fac2))], pch=15, axes=FALSE,
+     xlim=c(-160,160), ylim=c(-160,160), xlab="x", ylab="y",
+     main="Cycle count")
+axis(1,at=seq(-160,160,by=40), label=seq(-160,160,by=40))
+axis(2,at=seq(-160,160,by=40), label=seq(-160,160,by=40))
+
+plot(0,type="n", xlab="", ylab="", axes=FALSE)
+legend("topleft",levels(val$fac), pch=15, col=rainbow(10), ncol=5, cex=1.2, pt.cex=2)
+
+plot(0,type="n", xlab="", ylab="", axes=FALSE)
+legend("topleft",levels(val2$fac2), pch=15, col=myColors(20), ncol=3, cex=1.2, pt.cex=2)
+
+rm(val)
+layout(matrix(1,nrow=1, ncol=1))
+@
+\begin{scriptsize}
+\begin{landscape}
+<<eval=TRUE, echo=FALSE, results='asis'>>=
+best <- H5_prf_data_per_hole[order(H5_prf_data_per_hole$avg.cycle, decreasing=TRUE),]
+rownames(best) <- NULL
+xtable(best[0:40,c(0,1,2,3,4,5,6,8,10,11,12,13,14,15)],include.rownames=FALSE)
+@
+\end{landscape}
+\end{scriptsize}
+
+\section{Future}
+\begin{enumerate}
+  \item At the moment we lack the pulse data files, but ...
+  \item Analysis of neighboring holes and their effect to the center ?
+  \item 
+  
+\end{enumerate}
+
+\end{document}

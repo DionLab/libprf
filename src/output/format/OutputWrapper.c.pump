@@ -1,0 +1,410 @@
+#include "config.h"
+#include <stdlib.h>
+#include <stdio.h>
+#include <assert.h> 
+#include "pfOutput.h"
+#define __USE_INLINE_FUNCTIONS__
+#include "pfSequence.h"
+
+int compareAlignments(const void *a, const void *b) 
+{
+		if ( ((Alignment_t*)a)->Region.sequence.Begin < ((Alignment_t*)b)->Region.sequence.Begin )
+			return -1;
+		else {
+			if ( ((Alignment_t*)a)->Region.sequence.Begin == ((Alignment_t*)b)->Region.sequence.Begin ) 
+				return 0;
+			else 
+				return 1;
+		}
+}
+
+
+void WrapperOutput(union lScores * const restrict matrix, union lScores * const restrict rmatrix,
+                   const char * const SequenceText, const char * const restrict Header, 
+                   const struct Profile * const prf, const Compute_t * const restrict CoreCompute,  
+                   const size_t SeqLength, const void * const Options, pthread_mutex_t * const restrict PrintLock)
+{
+	char NewHeader[1024];
+	const char * const restrict ProfileSequence = prf->Sequence;
+	const size_t prfLength = prf->Length;
+	const _Bool IgnoreCutoff = ((struct IO_Wrapper *) Options)->OptimalOnly;
+	const PrintFunction Print = ((struct IO_Wrapper *) Options)->Print;
+	char * StateSequence = NULL;
+	size_t StateLength = 0;
+	
+	if ( ((struct IO_Wrapper *) Options)->Range == Wrapper_Alignement) {
+		_Bool * const restrict HasAPath = (_Bool*) calloc(1+SeqLength,sizeof(_Bool));
+		if (HasAPath == NULL) {
+			fprintf(stderr, "WrapperOutput unable to allocate HasAPath array of length %lu\n", 1+SeqLength);
+			exit(1);
+		}
+		Alignment_t lAlignment;
+		unsigned int count = 1U;
+		do {
+			/* Get Best Alignment */
+			const size_t Alignment_SeqLength = CoreCompute->GetNextBestAlignment(matrix, HasAPath, &lAlignment, SeqLength, prfLength);
+			if (Alignment_SeqLength == 0 && lAlignment.Score >= prf->CutOff) {
+				fprintf(stderr, "Issue as alignment does not start " \
+                                                "with an ENTRY point! (score=%i, seqlength=%lu)\n%.*s\n",
+								lAlignment.Score, SeqLength, (int) SeqLength,  SequenceText);
+#ifndef NDEBUG
+#ifdef USE_PDF
+				fputs("NoEntry.pdf file generated\n", stderr);
+				char ISSUE[] = "NoEntry.pdf";
+				struct IO_PDF NO = {
+				  .BaseFileName=ISSUE,
+				  .WithPaths=false,
+				  .WithProfileScoreGraph=false,
+				  .WithSequenceScoreGraph=false,
+				  .WithReverse=false,
+				  .GivenRegion=true,
+				  .x = {0,prfLength},
+				  .y = {0,10}
+				};
+				PDFOutput(matrix,rmatrix,SequenceText, Header, prf, CoreCompute, SeqLength, &NO, PrintLock);
+				exit(1);
+#endif
+#endif
+				break;
+			}
+			
+			/* Prevent further alignment to use this region */
+			_Bool AlreadyUsed = false;
+			assert(lAlignment.Matrix.row.End <= SeqLength);
+			assert(lAlignment.Matrix.row.Begin >=0);
+			for(int k=lAlignment.Matrix.row.Begin; k<=lAlignment.Matrix.row.End; ++k) {
+				AlreadyUsed |= HasAPath[k]; 
+				HasAPath[k] = true;
+			}
+				
+			if (!AlreadyUsed && (lAlignment.Score >= prf->CutOff || IgnoreCutoff) ) {
+				/* Get Aligned Sequence */
+				if (Alignment_SeqLength > StateLength) {
+					StateLength = Alignment_SeqLength; 
+					StateSequence = (char*) realloc(StateSequence, StateLength*sizeof(char));
+					if (StateSequence == NULL) {
+						fputs("Unable to allocate memory\n", stderr);
+						exit(1);
+					}
+				}
+		
+				CoreCompute->GetAlignmentSequence(matrix, SequenceText, StateSequence, &lAlignment, SeqLength, prfLength);
+				/* Send to pfsearch output format */
+				// WARNING: pfsearch expects to have an empty space at the beginning of the aligned sequence,
+				//          and it is zero based, hence -2 
+				const char * const AlignedSequence = StateSequence;// - 1;
+				snprintf(NewHeader, 1024, "%s/%u", Header, count++);
+				pthread_mutex_lock(PrintLock);
+				Print(prf, &AlignedSequence, &lAlignment, NewHeader, SeqLength, 0.0f, 1 ); // bizare cette SeqLength !!!! c'est celle de la sequence complete, pas l'alignement !!!!
+				pthread_mutex_unlock(PrintLock);
+			}
+			if (IgnoreCutoff) break;
+		} while (lAlignment.Score >= prf->CutOff);
+		free(HasAPath);
+	}
+	else if ( ((struct IO_Wrapper *) Options)->Range == Wrapper_Source) {
+		Alignment_t lAlignment;
+		/* Get Best Alignment */
+		const size_t Alignment_SeqLength = CoreCompute->GetBestAlignment(matrix, &lAlignment, SeqLength, prfLength);
+		if (Alignment_SeqLength == 0  && lAlignment.Score >= prf->CutOff) {
+			fprintf(stderr, "Issue as alignment does not start with an ENTRY point!" \
+                                        "(score=%i, seqlength=%lu)\n%.*s\n",
+							lAlignment.Score, SeqLength, (int) SeqLength,  SequenceText);
+#ifndef NDEBUG
+#ifdef USE_PDF
+			fputs("NoEntry.pdf file generated\n", stderr);
+			char ISSUE[] = "NoEntry.pdf";
+			struct IO_PDF NO = {
+			  .BaseFileName=ISSUE,
+			  .WithPaths=false,
+			  .WithProfileScoreGraph=false,
+			  .WithSequenceScoreGraph=false,
+			  .WithReverse=false,
+			  .GivenRegion=true,
+			  .x = {0,prfLength},
+			  .y = {0.,10}
+			};
+			PDFOutput(matrix,rmatrix,SequenceText, Header, prf, CoreCompute, SeqLength, &NO, PrintLock);
+			exit(1);
+#endif
+#endif
+		}
+			
+		if (lAlignment.Score >= prf->CutOff ) {
+			snprintf(NewHeader, 1024, "%s, %s @ %i:%i score=%i", Header, prf->Identification,
+							 lAlignment.Matrix.row.Begin,lAlignment.Matrix.row.End, lAlignment.Score);
+			pthread_mutex_lock(PrintLock);
+			Print(prf, &SequenceText, &lAlignment, NewHeader, SeqLength, 0.0f, 1 );
+			pthread_mutex_unlock(PrintLock);
+		}
+	}
+	else if ( ((struct IO_Wrapper *) Options)->Range == (Wrapper_Before | Wrapper_InBetween | Wrapper_After) ) {
+		_Bool * const restrict HasAPath = (_Bool*) calloc(1+SeqLength,sizeof(_Bool));
+		StateSequence = (char*) malloc((1+SeqLength)*sizeof(char));
+		if (HasAPath == NULL || StateSequence == NULL ) {
+			fprintf(stderr, "WrapperOutput unable to allocate HasAPath or StateSequence array of length %lu\n", 1+SeqLength);
+			exit(1);
+		}
+		memcpy(StateSequence, SequenceText, SeqLength);
+		StateSequence[SeqLength] = '\0';
+		Alignment_t * lAlignments = (Alignment_t*) malloc(16*sizeof(Alignment_t));
+		if (lAlignments == NULL) {
+			fputs("WrapperOutput unable to allocate alignment array of length 16\n", stderr);
+			exit(1);
+		}
+		unsigned int allocatedAlignments = 16U;
+		unsigned int count = 0U;
+		Alignment_t * lAlignment;
+		do {
+			lAlignment = lAlignments + count;
+			/* Get Best Alignment */
+			const size_t Alignment_SeqLength = CoreCompute->GetNextBestAlignment(matrix, HasAPath, lAlignment, SeqLength, prfLength);
+			if (Alignment_SeqLength == 0 && lAlignment->Score >= prf->CutOff) {
+				fprintf(stderr, "Issue as alignment does not start with an ENTRY point! "\
+                                                "(score=%i, seqlength=%lu)\n%.*s\n",
+								lAlignment->Score, SeqLength, (int) SeqLength,  SequenceText);
+				break;
+			}
+			
+			/* Prevent further alignment to use this region */
+			_Bool AlreadyUsed = false;
+			assert(lAlignment->Matrix.row.End <= SeqLength);
+			assert(lAlignment->Matrix.row.Begin >=0);
+			for(int k=lAlignment->Matrix.row.Begin; k<=lAlignment->Matrix.row.End; ++k) {
+				AlreadyUsed |= HasAPath[k]; 
+				HasAPath[k] = true;
+			}
+				
+			if (!AlreadyUsed && (lAlignment->Score >= prf->CutOff) ) {
+//  				fprintf("adapter in [%u,%u]\n", lAlignment->Region.sequence.Begin, lAlignment->Region.sequence.End);
+				if (++count >= allocatedAlignments) {
+					allocatedAlignments += 16;
+					lAlignments = (Alignment_t*) realloc(lAlignments, allocatedAlignments*sizeof(Alignment_t));
+					if (lAlignments == NULL) {
+						fprintf(stderr, "WrapperOutput unable to allocate alignment array of length %u\n", allocatedAlignments);
+						exit(1);
+					}
+				}
+			}
+		} while (lAlignment->Score >= prf->CutOff);
+		
+		free(HasAPath);
+		if (count) {
+			qsort(lAlignments, count, sizeof(Alignment_t), compareAlignments);
+			{
+				const size_t ThisSeqLength = lAlignments[0].Region.sequence.Begin;
+				if (ThisSeqLength > 0UL) {
+					const char Backup = StateSequence[ThisSeqLength];
+					StateSequence[ThisSeqLength] = '\0';
+					const char * const AlignedSequence = StateSequence;// - 1;
+					snprintf(NewHeader, 1024, "%s before %s with score %i", Header, prf->Identification, lAlignments[0].Score);
+					pthread_mutex_lock(PrintLock);
+					Print(prf, &AlignedSequence, &lAlignments[0], NewHeader, ThisSeqLength, 0.0f, 1 ); // bizare cette SeqLength !!!! c'est celle de la sequence complete, pas l'alignement !!!!
+					pthread_mutex_unlock(PrintLock);
+					StateSequence[ThisSeqLength] = Backup;
+				}
+			}
+			if (count >= 2) {
+				for (unsigned int i=1; i<count; i++) { 
+	// 				fprintf(stderr, "Interval [%u,%u] - [%u, %u]\n",
+	// 								lAlignments[i-1].Region.sequence.Begin, lAlignments[i-1].Region.sequence.End,
+	// 								lAlignments[i].Region.sequence.Begin, lAlignments[i].Region.sequence.End);
+					const ssize_t ThisSeqLength = (ssize_t) lAlignments[i].Region.sequence.Begin - (ssize_t) lAlignments[i-1].Region.sequence.End - 1;
+					if (ThisSeqLength > 0) {
+						const char Backup = StateSequence[lAlignments[i].Region.sequence.Begin];
+						StateSequence[lAlignments[i].Region.sequence.Begin] = '\0';
+						const char * const AlignedSequence = StateSequence + lAlignments[i-1].Region.sequence.End + 1;
+						snprintf(NewHeader, 1024, "%s/%u/%u-%u in between %s with scores %i and %i", Header, i,
+						         lAlignments[i-1].Region.sequence.End + 1, lAlignments[i].Region.sequence.Begin - 1,
+						         prf->Identification, lAlignments[i-1].Score, lAlignments[i].Score);
+						pthread_mutex_lock(PrintLock);
+						Print(prf, &AlignedSequence, &lAlignments[i], NewHeader, (size_t) ThisSeqLength, 0.0f, 1 ); // bizare cette SeqLength !!!! c'est celle de la sequence complete, pas l'alignement !!!!
+						pthread_mutex_unlock(PrintLock);
+						StateSequence[lAlignments[i].Region.sequence.Begin] = Backup;
+					}
+				}
+			}
+			{
+				const ssize_t ThisSeqLength = (ssize_t) SeqLength - (ssize_t) lAlignments[count-1].Region.sequence.End - 1;
+				if (ThisSeqLength > 0L) {
+					const char * const AlignedSequence = StateSequence + lAlignments[count-1].Region.sequence.End + 1;
+					snprintf(NewHeader, 1024, "%s after %s with score %i", Header, prf->Identification, lAlignments[count-1].Score);
+					pthread_mutex_lock(PrintLock);
+					Print(prf, &AlignedSequence, &lAlignments[count-1], NewHeader, (size_t) ThisSeqLength, 0.0f, 1 ); // bizare cette SeqLength !!!! c'est celle de la sequence complete, pas l'alignement !!!!
+					pthread_mutex_unlock(PrintLock);
+				}
+			}
+		}
+		free(lAlignments);
+		
+	}
+	else if ( ((struct IO_Wrapper *) Options)->Range == Wrapper_Before) {
+		_Bool * const restrict HasAPath = (_Bool*) calloc(1+SeqLength,sizeof(_Bool));
+		StateSequence = (char*) malloc((1+SeqLength)*sizeof(char));
+		if (HasAPath == NULL || StateSequence == NULL) {
+			fprintf(stderr, "WrapperOutput unable to allocate HasAPath or StateSequence array of length %lu\n", 1+SeqLength);
+			exit(1);
+		}
+		memcpy(StateSequence, SequenceText, SeqLength);
+		Alignment_t lAlignment;
+		do {
+			/* Get Best Alignment */
+			const size_t Alignment_SeqLength = CoreCompute->GetNextBestAlignment(matrix, HasAPath, &lAlignment, SeqLength, prfLength);
+			if (Alignment_SeqLength == 0 && lAlignment.Score >= prf->CutOff) {
+				fprintf(stderr, "Issue as alignment does not start "\
+                                                "with an ENTRY point! (score=%i, seqlength=%lu)\n%.*s\n",
+								lAlignment.Score, SeqLength, (int) SeqLength,  SequenceText);
+				break;
+			}
+			
+			/* Prevent further alignment to use this region */
+			_Bool AlreadyUsed = false;
+			assert(lAlignment.Matrix.row.End <= SeqLength);
+			assert(lAlignment.Matrix.row.Begin >=0);
+			for(int k=lAlignment.Matrix.row.Begin; k<=lAlignment.Matrix.row.End; ++k) {
+				AlreadyUsed |= HasAPath[k]; 
+				HasAPath[k] = true;
+			}
+				
+			if (!AlreadyUsed && (lAlignment.Score >= prf->CutOff || IgnoreCutoff) ) {
+				const size_t ThisSeqLength = lAlignment.Region.sequence.Begin;
+				if (ThisSeqLength > 0UL) {
+					const char Backup = StateSequence[ThisSeqLength];
+					StateSequence[ThisSeqLength] = '\0';
+					const char * const AlignedSequence = StateSequence;// - 1;
+					snprintf(NewHeader, 1024, "%s before %s with score %i", Header, prf->Identification, lAlignment.Score);
+					pthread_mutex_lock(PrintLock);
+					Print(prf, &AlignedSequence, &lAlignment, NewHeader, ThisSeqLength, 0.0f, 1 ); // bizare cette SeqLength !!!! c'est celle de la sequence complete, pas l'alignement !!!!
+					pthread_mutex_unlock(PrintLock);
+					StateSequence[ThisSeqLength] = Backup;
+				}
+			}
+			if (IgnoreCutoff) break;
+		} while (lAlignment.Score >= prf->CutOff);
+		free(HasAPath);
+	}
+	else if ( ((struct IO_Wrapper *) Options)->Range == Wrapper_After) {
+		_Bool * const restrict HasAPath = (_Bool*) calloc(1+SeqLength,sizeof(_Bool));
+		StateSequence = (char*) malloc((1+SeqLength)*sizeof(char));
+		if (HasAPath == NULL || StateSequence == NULL ) {
+			fprintf(stderr, "WrapperOutput unable to allocate HasAPath or StateSequence array of length %lu\n", 1+SeqLength);
+			exit(1);
+		}
+		memcpy(StateSequence, SequenceText, SeqLength);
+		StateSequence[SeqLength] = '\0';
+		Alignment_t lAlignment;
+		do {
+			/* Get Best Alignment */
+			const size_t Alignment_SeqLength = CoreCompute->GetNextBestAlignment(matrix, HasAPath, &lAlignment, SeqLength, prfLength);
+			if (Alignment_SeqLength == 0 && lAlignment.Score >= prf->CutOff) {
+				fprintf(stderr, "Issue as alignment does not start "\
+                                                "with an ENTRY point! (score=%i, seqlength=%lu)\n%.*s\n",
+								lAlignment.Score, SeqLength, (int) SeqLength,  SequenceText);
+				break;
+			}
+			
+			/* Prevent further alignment to use this region */
+			_Bool AlreadyUsed = false;
+			assert(lAlignment.Matrix.row.End <= SeqLength);
+			assert(lAlignment.Matrix.row.Begin >=0);
+			for(int k=lAlignment.Matrix.row.Begin; k<=lAlignment.Matrix.row.End; ++k) {
+				AlreadyUsed |= HasAPath[k]; 
+				HasAPath[k] = true;
+			}
+				
+			if (!AlreadyUsed && (lAlignment.Score >= prf->CutOff || IgnoreCutoff) ) {
+				const ssize_t ThisSeqLength = (ssize_t) SeqLength - (ssize_t) lAlignment.Region.sequence.End - 1;
+				if (ThisSeqLength > 0L) {
+					const char * const AlignedSequence = StateSequence + lAlignment.Region.sequence.End + 1;
+					snprintf(NewHeader, 1024, "%s after %s with score %i", Header, prf->Identification, lAlignment.Score);
+					pthread_mutex_lock(PrintLock);
+					Print(prf, &AlignedSequence, &lAlignment, NewHeader, (size_t) ThisSeqLength, 0.0f, 1 ); // bizare cette SeqLength !!!! c'est celle de la sequence complete, pas l'alignement !!!!
+					pthread_mutex_unlock(PrintLock);
+				}
+			}
+			if (IgnoreCutoff) break;
+		} while (lAlignment.Score >= prf->CutOff);
+		free(HasAPath);
+	}
+	else if ( ((struct IO_Wrapper *) Options)->Range == Wrapper_InBetween) {
+		_Bool * const restrict HasAPath = (_Bool*) calloc(1+SeqLength,sizeof(_Bool));
+		StateSequence = (char*) malloc((1+SeqLength)*sizeof(char));
+		if (HasAPath == NULL || StateSequence == NULL ) {
+			fprintf(stderr, "WrapperOutput unable to allocate HasAPath or StateSequence array of length %lu\n", 1+SeqLength);
+			exit(1);
+		}
+		memcpy(StateSequence, SequenceText, SeqLength);
+		StateSequence[SeqLength] = '\0';
+		Alignment_t * lAlignments = (Alignment_t*) malloc(16*sizeof(Alignment_t));
+		if (lAlignments == NULL) {
+			fputs("WrapperOutput unable to allocate alignment array of length 16\n", stderr);
+			exit(1);
+		}
+		unsigned int allocatedAlignments = 16U;
+		unsigned int count = 0U;
+		Alignment_t * lAlignment;
+		do {
+			lAlignment = lAlignments + count;
+			/* Get Best Alignment */
+			const size_t Alignment_SeqLength = CoreCompute->GetNextBestAlignment(matrix, HasAPath, lAlignment, SeqLength, prfLength);
+			if (Alignment_SeqLength == 0 && lAlignment->Score >= prf->CutOff) {
+				fprintf(stderr, "Issue as alignment does not start "\
+                                                "with an ENTRY point! (score=%i, seqlength=%lu)\n%.*s\n",
+								lAlignment->Score, SeqLength, (int) SeqLength,  SequenceText);
+				break;
+			}
+			
+			/* Prevent further alignment to use this region */
+			_Bool AlreadyUsed = false;
+			assert(lAlignment->Matrix.row.End <= SeqLength);
+			assert(lAlignment->Matrix.row.Begin >=0);
+			for(int k=lAlignment->Matrix.row.Begin; k<=lAlignment->Matrix.row.End; ++k) {
+				AlreadyUsed |= HasAPath[k]; 
+				HasAPath[k] = true;
+			}
+				
+			if (!AlreadyUsed && (lAlignment->Score >= prf->CutOff) ) {
+//  				fprintf("adapter in [%u,%u]\n", lAlignment->Region.sequence.Begin, lAlignment->Region.sequence.End);
+				if (++count >= allocatedAlignments) {
+					allocatedAlignments += 16;
+					lAlignments = (Alignment_t*) realloc(lAlignments, allocatedAlignments*sizeof(Alignment_t));
+					if (lAlignments == NULL) {
+						fprintf(stderr, "WrapperOutput unable to allocate alignment array of length %u\n", allocatedAlignments);
+						exit(1);
+					}
+				}
+			}
+		} while (lAlignment->Score >= prf->CutOff);
+		
+		free(HasAPath);
+// 		printf("Found %u adapters\n", count);
+		if (count >= 2) {
+			qsort(lAlignments, count, sizeof(Alignment_t), compareAlignments);
+			for (unsigned int i=1; i<count; i++) { 
+// 				fprintf(stderr, "Interval [%u,%u] - [%u, %u]\n",
+// 								lAlignments[i-1].Region.sequence.Begin, lAlignments[i-1].Region.sequence.End,
+// 								lAlignments[i].Region.sequence.Begin, lAlignments[i].Region.sequence.End);
+				const ssize_t ThisSeqLength = (ssize_t) lAlignments[i].Region.sequence.Begin - (ssize_t) lAlignments[i-1].Region.sequence.End - 1;
+				if (ThisSeqLength > 0) {
+					const char Backup = StateSequence[lAlignments[i].Region.sequence.Begin];
+					StateSequence[lAlignments[i].Region.sequence.Begin] = '\0';
+					const char * const AlignedSequence = StateSequence + lAlignments[i-1].Region.sequence.End + 1;
+					snprintf(NewHeader, 1024, "%s/%u/%u-%u in between %s with scores %i and %i", Header, i,
+									lAlignments[i-1].Region.sequence.End + 1, lAlignments[i].Region.sequence.Begin - 1,
+									prf->Identification, lAlignments[i-1].Score, lAlignments[i].Score);
+					pthread_mutex_lock(PrintLock);
+					Print(prf, &AlignedSequence, &lAlignments[i], NewHeader, (size_t) ThisSeqLength, 0.0f, 1 ); // bizare cette SeqLength !!!! c'est celle de la sequence complete, pas l'alignement !!!!
+					pthread_mutex_unlock(PrintLock);
+					StateSequence[lAlignments[i].Region.sequence.Begin] = Backup;
+				}
+			}
+		}
+		free(lAlignments);
+	}
+	else {
+		fputs("Unknown IO default range option\n", stderr);
+		exit(1);
+	}
+	
+	if (StateSequence) free(StateSequence);
+}

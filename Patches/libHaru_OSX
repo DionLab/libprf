@@ -1,0 +1,16 @@
+--- CMakeLists.txt	2019-01-29 08:47:45.000000000 +0100
++++ CMakeLists.txt	2019-01-29 08:49:21.000000000 +0100
+@@ -14,6 +14,13 @@
+ # =======================================================================
+ project(libharu C)
+ 
++IF (COMMAND cmake_policy)
++	IF(POLICY CMP0042)
++		CMAKE_POLICY(SET CMP0042 NEW)
++	ENDIF(POLICY CMP0042)
++ENDIF(COMMAND cmake_policy)
++
++
+ # determine compiler name
+ set(COMPILER_LABEL "unknown")
+ if(CMAKE_COMPILER_IS_GNUCC)

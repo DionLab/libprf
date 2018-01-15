@@ -1,0 +1,42 @@
+# Instruction to build libHaru from internal package source
+INCLUDE(ExternalProject)
+
+IF(STANDALONE)
+	SET(EXTRA -DLIBHPDF_SHARED=OFF -DLIBHPDF_STATIC=ON)
+ELSE(STANDALONE)
+	SET(EXTRA -DLIBHPDF_SHARED=ON -DLIBHPDF_STATIC=OFF)
+ENDIF(STANDALONE)
+
+IF(APPLE)
+	#SET(EXTRA "${EXTRA} -DCMAKE_INSTALL_RPATH=@rpath -DCMAKE_SKIP_BUILD_RPATH=FALSE -DCMAKE_INSTALL_RPATH_USE_LINK_PATH=FALSE -DCMAKE_MACOSX_RPATH=TRUE")
+ENDIF(APPLE)
+
+EXTERNALPROJECT_ADD(libHaru
+	URL https://github.com/libharu/libharu/archive/RELEASE_2_3_0.zip
+	PREFIX ${EXTERNAL_INSTALL_LOCATION}/libHaru
+        CMAKE_ARGS ${EXTRA}
+	INSTALL_COMMAND ""
+	PATCH_COMMAND ${PATCH_EXECUTABLE} -p0 < ${CMAKE_CURRENT_SOURCE_DIR}/Patches/libHaru_cmake
+)
+ExternalProject_Get_Property(libHaru install_dir)
+#include_directories(${EXTERNAL_INSTALL_LOCATION}/libHaru/src/libHaru/include ${EXTERNAL_INSTALL_LOCATION}/libHaru/src/libHaru-build/include)
+MESSAGE(STATUS "libHaru will be built in ${install_dir}")
+
+SET( hpdf_LIBRARY_DIRS ${EXTERNAL_INSTALL_LOCATION}/libHaru/src/libHaru/lib)
+# Set uncached variables as per standard.
+# 	  set(hpdf_FOUND ON)
+SET(hpdf_INCLUDE_DIRS ${EXTERNAL_INSTALL_LOCATION}/libHaru/src/libHaru/include;${EXTERNAL_INSTALL_LOCATION}/libHaru/src/libHaru-build/include)
+
+IF(STANDALONE)
+	SET(hpdf_LIBRARIES ${EXTERNAL_INSTALL_LOCATION}/libHaru/src/libHaru-build/src/libhpdfs${CMAKE_STATIC_LIBRARY_SUFFIX};-lz)
+ELSE(STANDALONE)
+  SET(hpdf_LIBRARIES ${EXTERNAL_INSTALL_LOCATION}/libHaru/src/libHaru-build/src/libhpdf${CMAKE_SHARED_LIBRARY_SUFFIX})
+	INSTALL(FILES ${EXTERNAL_INSTALL_LOCATION}/libHaru/src/libHaru-build/src/libhpdf${CMAKE_SHARED_LIBRARY_SUFFIX} 
+				  DESTINATION lib
+				  PERMISSIONS OWNER_EXECUTE OWNER_READ OWNER_WRITE
+											GROUP_EXECUTE GROUP_READ 
+											WORLD_EXECUTE WORLD_READ
+	)
+ENDIF(STANDALONE)
+
+MARK_AS_ADVANCED( hpdf_INCLUDE_DIRS hpdf_LIBRARIES hpdf_LIBRARY_DIRS)

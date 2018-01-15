@@ -1,0 +1,26 @@
+--- CMakeLists.orig	2019-01-29 09:04:29.000000000 +0100
++++ CMakeLists.txt	2019-01-29 09:06:12.000000000 +0100
+@@ -13,6 +13,13 @@
+ # libharu project
+ # =======================================================================
+ project(libharu C)
++CMAKE_MINIMUM_REQUIRED(VERSION 3.9 FATAL_ERROR)
++IF (COMMAND cmake_policy)
++	IF(POLICY CMP0042)
++		CMAKE_POLICY(SET CMP0042 NEW)
++	ENDIF(POLICY CMP0042)
++ENDIF(COMMAND cmake_policy)
++
+ 
+ # determine compiler name
+ set(COMPILER_LABEL "unknown")
+@@ -31,9 +38,6 @@
+ set(LIBHPDF_DESCRIPTION "libHaru is a free, cross platform, open source library for generating PDF files.")
+ set(LIBHPDF_PACKAGE_NAME "libHaru-${LIBHPDF_VERSION}-${COMPILER_LABEL}")
+ 
+-# we want cmake version 2.4.8 at least
+-cmake_minimum_required(VERSION 2.4.8 FATAL_ERROR)
+-
+ # Location where the haru cmake build system first looks for cmake modules
+ set(CMAKE_MODULE_PATH ${PROJECT_SOURCE_DIR}/cmake/modules)
+ 

@@ -1,0 +1,31 @@
+diff --git a/googletest/scripts/pump.py b/googletest/scripts/pump.py
+index 5efb653..aea3ba5 100755
+--- a/googletest/scripts/pump.py
++++ b/googletest/scripts/pump.py
+@@ -723,7 +723,7 @@ def WrapComment(line, output):
+     output.append(before_comment)
+     indent = len(before_comment) - len(before_comment.lstrip())
+   prefix = indent*' ' + '// '
+-  max_len = 80 - len(prefix)
++  max_len = 150 - len(prefix)
+   comment = line[loc + 2:].strip()
+   segs = [seg for seg in re.split(r'(\w+\W*)', comment) if seg != '']
+   cur_line = ''
+@@ -741,7 +741,7 @@ def WrapComment(line, output):
+ def WrapCode(line, line_concat, output):
+   indent = len(line) - len(line.lstrip())
+   prefix = indent*' '  # Prefix of the current line
+-  max_len = 80 - indent - len(line_concat)  # Maximum length of the current line
++  max_len = 150 - indent - len(line_concat)  # Maximum length of the current line
+   new_prefix = prefix + 4*' '  # Prefix of a continuation line
+   new_max_len = max_len - 4  # Maximum length of a continuation line
+   # Prefers to wrap a line after a ',' or ';'.
+@@ -789,7 +789,7 @@ def IsHeaderGuardIncludeOrOneLineIWYUPragma(line):
+ 
+ def WrapLongLine(line, output):
+   line = line.rstrip()
+-  if len(line) <= 80:
++  if len(line) <= 150:
+     output.append(line)
+   elif IsSingleLineComment(line):
+     if IsHeaderGuardIncludeOrOneLineIWYUPragma(line):

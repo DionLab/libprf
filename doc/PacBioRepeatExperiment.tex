@@ -1,0 +1,132 @@
+\documentclass{article}\usepackage[]{graphicx}\usepackage[]{color}
+%% maxwidth is the original width if it is less than linewidth
+%% otherwise use linewidth (to make sure the graphics do not exceed the margin)
+\makeatletter
+\def\maxwidth{ %
+  \ifdim\Gin@nat@width>\linewidth
+    \linewidth
+  \else
+    \Gin@nat@width
+  \fi
+}
+\makeatother
+
+\definecolor{fgcolor}{rgb}{0.345, 0.345, 0.345}
+\newcommand{\hlnum}[1]{\textcolor[rgb]{0.686,0.059,0.569}{#1}}%
+\newcommand{\hlstr}[1]{\textcolor[rgb]{0.192,0.494,0.8}{#1}}%
+\newcommand{\hlcom}[1]{\textcolor[rgb]{0.678,0.584,0.686}{\textit{#1}}}%
+\newcommand{\hlopt}[1]{\textcolor[rgb]{0,0,0}{#1}}%
+\newcommand{\hlstd}[1]{\textcolor[rgb]{0.345,0.345,0.345}{#1}}%
+\newcommand{\hlkwa}[1]{\textcolor[rgb]{0.161,0.373,0.58}{\textbf{#1}}}%
+\newcommand{\hlkwb}[1]{\textcolor[rgb]{0.69,0.353,0.396}{#1}}%
+\newcommand{\hlkwc}[1]{\textcolor[rgb]{0.333,0.667,0.333}{#1}}%
+\newcommand{\hlkwd}[1]{\textcolor[rgb]{0.737,0.353,0.396}{\textbf{#1}}}%
+
+\usepackage{framed}
+\makeatletter
+\newenvironment{kframe}{%
+ \def\at@end@of@kframe{}%
+ \ifinner\ifhmode%
+  \def\at@end@of@kframe{\end{minipage}}%
+  \begin{minipage}{\columnwidth}%
+ \fi\fi%
+ \def\FrameCommand##1{\hskip\@totalleftmargin \hskip-\fboxsep
+ \colorbox{shadecolor}{##1}\hskip-\fboxsep
+     % There is no \\@totalrightmargin, so:
+     \hskip-\linewidth \hskip-\@totalleftmargin \hskip\columnwidth}%
+ \MakeFramed {\advance\hsize-\width
+   \@totalleftmargin\z@ \linewidth\hsize
+   \@setminipage}}%
+ {\par\unskip\endMakeFramed%
+ \at@end@of@kframe}
+\makeatother
+
+\definecolor{shadecolor}{rgb}{.97, .97, .97}
+\definecolor{messagecolor}{rgb}{0, 0, 0}
+\definecolor{warningcolor}{rgb}{1, 0, 1}
+\definecolor{errorcolor}{rgb}{1, 0, 0}
+\newenvironment{knitrout}{}{} % an empty environment to be redefined in TeX
+
+\usepackage{alltt}
+\title{Analysis of PacBio repeats through tweaked\\ PfTools software suite}
+\author{Thierry Schuepbach, Emmanuel Beaudoing}
+\IfFileExists{upquote.sty}{\usepackage{upquote}}{}
+\begin{document}
+\maketitle
+
+\section{Description of the experiments}
+In an attemp to account tandem repeats inside PacBio Next Generation Sequencing Technology the following experiment was undertook.
+Two libraries $L_1$, $L_2$ were generated through the use of known Trinucleotide Tandem Repeats (TDR) taken from chosen regions of the human genome. The number of injected repeats is taken to be of length 50, 97, ..., 270.
+Those were cut of the genome keeping on each side part of the human genome. In addition a specific barcode
+was added prior to the smrtcell adapter to the sequence.
+Consequently, we should be in a position to identify each smrt cell hole provenance, and thus confirm the correctness of the potential detected number of TDR.
+
+The difference between $L_1$ and $L_2$ still needs some explanation here?
+
+The experiment was undertook with different initial conditions, that is
+\begin{itemize}
+  \item MacBeads or diffusion smrt cell preparation
+  \item DNA repair or not
+\end{itemize}
+
+Alltogether we have $8$ different analysis to perform.
+
+\section{Raw data}
+Access to the raw data was granted by Emmanuel Beaudoing. It consists of:
+\begin{itemize}
+  \item Library 1
+  \begin{itemize}
+    \item Diffusion loading
+    \begin{itemize}
+      \item m150603\_150743\_42182\_c100829742550000001823181912311505
+    \end{itemize}
+    \item MagBead loading
+    \begin{itemize}
+      \item m150812\_171008\_42182\_c100858212550000001823192601241610
+    \end{itemize}
+  \end{itemize}
+  \item Library 2
+  \begin{itemize}
+    \item with DNA damage repair
+    \begin{itemize}
+      \item m151124\_111416\_42182\_c100906162550000001823201404301604
+      \item m151124\_153718\_42182\_c100906162550000001823201404301605
+    \end{itemize}
+    \item without DNA damage repair
+    \begin{itemize}
+      \item m151124\_200325\_42182\_c100906162550000001823201404301606
+      \item m151125\_002713\_42182\_c100906162550000001823201404301607
+    \end{itemize}
+  \end{itemize}
+\end{itemize}
+Barcodes used are:
+\begin{enumerate}
+  \item ATCTGTGCGAGACTAC
+  \item AGACTCTACAGAGATA
+  \item TCTCTCACAGTCGAGC
+  \item GCTCGACTGTGAGAGA
+\end{enumerate}
+\section{Analysis performed by the GTF}
+\begin{itemize}
+  \item 
+  \item
+\end{itemize}
+\section{Potential issues that could be cleaned by using PfTools software suite}
+The GTF analysis revealed that few sequences bearing 270 TDR were found. We have to be quite careful with such results as the method used to identify provenance is based upon exact barcode matching. Also, we need to check whether this is concensus or subread based. In the case of very long reads, as expected for numerous TDR, the concensus is not great. This could of course be checked through the quality given by the PacBio pipeline for each sequence. Anyway, it is of major importance to be able to identify barcode through PfTools profile simply to loose a bit on the exactness of the match.
+
+In addition, Emmanuel believes those could be mainly be found within the subset of holes showing issues of two kinds:
+\begin{itemize}
+  \item the polimerase was not able to cope with the first met smrt cell adapter and stopped there.
+  \item the polimerase was not able to drive through the 3D structure of such reads due to their heavy number of TDR.
+\end{itemize}
+In any case, it is of main importance to be able to achieve a in depth analysis on where are those reads provided they exist. To that purpose, we propose to demultiplex the holes with PfTools software suite.
+
+\subsection{PfTools demultiplexing}
+Let us here compare the results obtained from perfect match over barcodes with the ones coming from profile methods. To that purpose, we have to generate foreach barcode a profile and run those over the sequencing holes. Hence, each hole shall have an average score in both direct and reverse complement based on its subreads. From there, we could check and provide to the best of the scoring system a provenance of the hole.
+
+
+
+\section{}
+
+
+\end{document}
