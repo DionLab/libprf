@@ -155,7 +155,7 @@ ENDIF(BUILD_TOOLS)
 #########################################################################################
 # Tests 
 IF (BUILD_TESTING)
-  INCLUDE(${CMAKE_CURRENT_SOURCE_DIR}/../cmake/tests/TestSuite.cmake)
+#  INCLUDE(${CMAKE_CURRENT_SOURCE_DIR}/../cmake/tests/TestSuite.cmake)
 ENDIF(BUILD_TESTING)
 
 #########################################################################################
