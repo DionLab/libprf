@@ -10,7 +10,7 @@ IF(NOT STANDALONE)
 ENDIF(NOT STANDALONE) 
 
 EXTERNALPROJECT_ADD(libPCRE
-		URL https://ftp.pcre.org/pub/pcre/pcre-8.41.tar.bz2 
+		URL https://github.com/PCRE2Project/pcre2/releases/download/pcre2-10.40/pcre2-10.40.tar.bz2
 		PREFIX ${EXTERNAL_INSTALL_LOCATION}/libPCRE
 		CMAKE_ARGS -DCMAKE_INSTALL_PREFIX:PATH=${CMAKE_CURRENT_BINARY_DIR}/libPCRE
 			   -DPCRE_BUILD_TESTS=OFF
